@@ -4,7 +4,7 @@
 -- | This module implements functions that print out
 --   statistics about the constraints.
 
-module Language.Fixpoint.Partition (
+module Language.Fixpoint.Graph (
     CPart (..)
 
   -- * Split constraints
@@ -218,25 +218,13 @@ groupFun m k = safeLookup ("groupFun: " ++ show k) k m
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
--- data CVertex = KVar  F.KVar  --  real kvar vertex
-             -- .. | DKVar F.KVar  --  dummy to ensure each kvar has a successor
-             -- .. | Cstr  Integer --  constraint-id which creates a dependency
-               -- .. deriving (Eq, Ord, Show, Generic)
-
--- instance PPrint CVertex where
-  -- pprint (KVar k)  = pprint k
-  -- pprint (DKVar k) = pprint k    <> text "*"
-  -- pprint (Cstr i)  = text "id:" <+> pprint i
-
--- instance Hashable CVertex
-
-data KVGraph  = KVG { gGraph :: Gr CVertex CEdge
+data KVGraph  = KVG { gGraph :: Gr F.KVar Integer
                     , gVerts :: M.HashMap Node F.KVar
                     }
                 deriving (Show, Generic)
 
 type CVertex  = F.KVar
-type CEdge    = Integer
+type CEdge    = (F.KVar, Integer, F.KVar)
 type Comps a  = [[a]]
 type KVComps  = Comps CVertex
 
@@ -254,34 +242,43 @@ nodeCVertex g i = safeLookup "nodeCVertex" i (gVerts g)
 -- kvGraph :: F.FInfo a -> KVGraph
 kvGraph :: (F.TaggedC c a) => F.GInfo c a -> KVGraph
 -------------------------------------------------------------------------------
-kvGraph = edgeGraph . kvEdges
+kvGraph fi = mkGraph ns es
+  where
+    ns     = kvNode <$> fiKVars fi
+    es     = kvEdge <$> kvEdges fi
+
+kvNode :: F.KVar -> LNode F.KVar
+kvNode k = (kvInt k, k)
+
+kvEdge :: (F.KVar, Integer, F.KVar) -> LEdge Integer
+kvEdge (k, i, k') = (n, i, n')
+  where
+    (n, _)        = kvNode k
+    (n',_)        = kvNode k'
 
 edgeGraph :: [CEdge] -> KVGraph
 edgeGraph es = [(v,v,vs) | (v, vs) <- groupList es ]
 
--- kvEdges :: F.FInfo a -> [CEdge]
 kvEdges :: (F.TaggedC c a) => F.GInfo c a -> [CEdge]
-kvEdges fi = selfes ++ concatMap (subcEdges bs) cs
+kvEdges fi = concatMap (subcEdges bs) cs
   where
     bs     = F.bs fi
     cs     = M.elems (F.cm fi)
     ks     = fiKVars fi
-    selfes =  [(Cstr i, Cstr i)   | c <- cs, let i = F.subcId c]
-           ++ [(KVar k, DKVar k)  | k <- ks]
-           ++ [(DKVar k, DKVar k) | k <- ks]
 
 fiKVars :: F.GInfo c a -> [F.KVar]
 fiKVars = M.keys . F.ws
 
-subcEdges :: (F.TaggedC c a) => F.BindEnv -> c a -> [CEdge]
-subcEdges bs c =  [(KVar k, Cstr i ) | k  <- V.envKVars bs c]
-               ++ [(Cstr i, KVar k') | k' <- V.rhsKVars c ]
+subcEdges :: (F.TaggedC c a) => F.BindEnv -> c a -> [(CVertex, Integer, CVertex)]
+subcEdges bs c =  [(k, i, k') | k  <- V.envKVars bs c
+                              , k' <- V.rhsKVars c]
   where
     i          = F.subcId c
 
 --------------------------------------------------------------------------------
 -- | Generic Dependencies ------------------------------------------------------
 --------------------------------------------------------------------------------
+
 data GDeps a
   = Deps { depCuts    :: !(S.HashSet a)
          , depNonCuts :: !(S.HashSet a)
@@ -301,15 +298,12 @@ dCut    v = Deps (S.singleton v) S.empty
 --------------------------------------------------------------------------------
 deps :: (F.TaggedC c a) => F.GInfo c a -> GDeps F.KVar
 --------------------------------------------------------------------------------
-deps si         = Deps (takeK cs) (takeK ns)
+deps si         = Deps cs ns
   where
     Deps cs ns  = gDeps cutF (edgeGraph es)
     es          = kvEdges si
     -- ORIG cutF = chooseCut isK (cuts si)
     cutF        = edgeRankCut (edgeRank es)
-    takeK       = sMapMaybe tx
-    tx (KVar z) = Just z
-    tx _        = Nothing
 
 -- crash _ = undefined
 -- cutter :: F.TaggedC c a => F.GInfo c a -> Cutter CVertex
