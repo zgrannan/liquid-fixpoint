@@ -554,15 +554,10 @@ checkRelTy f _ _ (FObj l) (FObj l') | l /= l'
 checkRelTy f _ _ FInt (FObj l)     = checkNumeric f l `withError` (errNonNumeric l)
 checkRelTy f _ _ (FObj l) FInt     = checkNumeric f l `withError` (errNonNumeric l)
 checkRelTy _ _ _ FReal FReal       = return ()
-<<<<<<< HEAD
-checkRelTy f _ _ FReal (FObj l)    = checkFractional f l `withError` (errNonFractional l)
-checkRelTy f _ _ (FObj l) FReal    = checkFractional f l `withError` (errNonFractional l)
-=======
 checkRelTy _ _ _ FInt  FReal       = return ()
 checkRelTy _ _ _ FReal FInt        = return ()
-checkRelTy f _ _ FReal (FObj l)    = checkFractional f l `catchError` (\_ -> throwError $ errNonFractional l)
-checkRelTy f _ _ (FObj l) FReal    = checkFractional f l `catchError` (\_ -> throwError $ errNonFractional l)
->>>>>>> develop
+checkRelTy f _ _ FReal (FObj l)    = checkFractional f l `withError` (errNonFractional l)
+checkRelTy f _ _ (FObj l) FReal    = checkFractional f l `withError` (errNonFractional l)
 
 checkRelTy _ e Eq t1 t2
   | t1 == boolSort ||
@@ -636,14 +631,13 @@ unify1 f θ FInt t@(FObj l) = do
   checkNumeric f l `withError` (errUnify FInt t)
   return θ
 
-<<<<<<< HEAD
-unify1 f θ (FFunc t1 t2) (FFunc t1' t2') = do
-=======
-unify1 _ θ FInt  FReal = return θ
-unify1 _ θ FReal FInt  = return θ
+unify1 _ θ FInt  FReal = 
+  return θ
+
+unify1 _ θ FReal FInt  = 
+  return θ
 
 unify1 f θ (FFunc t1 t2) (FFunc t1' t2') = do 
->>>>>>> develop
   unifyMany f θ [t1, t2] [t1', t2']
 
 unify1 _ θ t1 t2
