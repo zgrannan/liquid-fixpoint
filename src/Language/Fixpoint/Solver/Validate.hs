@@ -32,8 +32,8 @@ type ValidateM a = Either E.Error a
 --------------------------------------------------------------------------------
 sanitize :: F.SInfo a -> ValidateM (F.SInfo a)
 --------------------------------------------------------------------------------
-sanitize   =    -- banIllScopedKvars
-             fM dropFuncSortedShadowedBinders
+sanitize   =    banIllScopedKvars
+         >=> fM dropFuncSortedShadowedBinders
          >=> fM sanitizeWfC
          >=> fM replaceDeadKvars
          >=> fM dropBogusSubstitutions
@@ -49,9 +49,9 @@ sanitize   =    -- banIllScopedKvars
 --   then
 --      G1 \cap G2 \subseteq wenv(k)
 --------------------------------------------------------------------------------
-_banIllScopedKvars :: F.SInfo a ->  ValidateM (F.SInfo a)
+banIllScopedKvars :: F.SInfo a ->  ValidateM (F.SInfo a)
 --------------------------------------------------------------------------------
-_banIllScopedKvars si = Misc.applyNonNull (Right si) (Left . badKs) errs
+banIllScopedKvars si = Misc.applyNonNull (Right si) (Left . badKs) errs
   where
     errs             = concatMap (checkIllScope si kDs) ks
     kDs              = kvarDefUses si
@@ -66,19 +66,24 @@ type KvDefs    = (KvConstrM, KvConstrM)
 type SubcId    = Integer
 
 checkIllScope :: F.SInfo a -> KvDefs -> F.KVar -> [(F.KVar, SubcId, SubcId, F.IBindEnv)]
-checkIllScope si (inM, outM) k = mapMaybe (uncurry (isIllScope si k)) ios
+checkIllScope si (inM, outM) k = mapMaybe (uncurry (isIllScope si kXs k)) ios
   where
     ios                        = [(i, o) | i <- ins, o <- outs, i /= o ]
     ins                        = M.lookupDefault [] k inM
     outs                       = M.lookupDefault [] k outM
+    kXs                        = meetIBindEnvs $ subcBinds si <$> ins ++ outs
 
-isIllScope :: F.SInfo a -> F.KVar -> SubcId -> SubcId -> Maybe (F.KVar, SubcId, SubcId, F.IBindEnv)
-isIllScope si k inI outI
+meetIBindEnvs :: [F.IBindEnv] -> F.IBindEnv
+meetIBindEnvs []   = F.emptyIBindEnv
+meetIBindEnvs envs = foldr1 F.intersectionIBindEnv envs
+
+isIllScope :: F.SInfo a -> F.IBindEnv -> F.KVar -> SubcId -> SubcId -> Maybe (F.KVar, SubcId, SubcId, F.IBindEnv)
+isIllScope si kXs k inI outI
   | F.nullIBindEnv badXs = Nothing
   | otherwise            = Just (k, inI, outI, badXs)
   where
-    badXs                = F.diffIBindEnv commonXs kXs
-    kXs                  = {- F.tracepp ("kvarBinds " ++ show k) $ -} kvarBinds si k
+    badXs                = F.diffIBindEnv commonXs (F.unionIBindEnv kXs kXs')
+    kXs'                 = kvarBinds si k
     commonXs             = F.intersectionIBindEnv inXs outXs
     inXs                 = subcBinds si inI
     outXs                = subcBinds si outI
