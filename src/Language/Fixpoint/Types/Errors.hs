@@ -60,12 +60,14 @@ import           Language.Fixpoint.Misc
 import           Text.PrettyPrint.HughesPJ
 -- import           Text.Printf
 import           Data.Function (on)
+import           Data.Text (Text)
+import qualified Data.Text as Text
+import           Data.Serialize.Text
 
 -- import           Debug.Trace
 
 instance Serialize Error1
 instance Serialize TextDetails
-instance Serialize Doc
 instance Serialize Error
 instance Serialize (FixResult Error)
 
@@ -80,7 +82,7 @@ newtype Error = Error [Error1]
 
 data Error1 = Error1
   { errLoc :: SrcSpan
-  , errMsg :: Doc
+  , errMsg :: Text
   } deriving (Eq, Show, Typeable, Generic)
 
 instance Ord Error1 where
@@ -88,7 +90,7 @@ instance Ord Error1 where
 
 instance PPrint Error1 where
   pprintTidy k (Error1 l msg) = (pprintTidy k l <> ": Error")
-                                $+$ nest 2 msg
+                                $+$ nest 2 ((text . Text.unpack) msg)
 
 instance PPrint Error where
   pprintTidy k (Error es) = vcat $ pprintTidy k <$> es
@@ -113,7 +115,7 @@ catErrors = foldr1 catError
 ---------------------------------------------------------------------
 err :: SrcSpan -> Doc -> Error
 ---------------------------------------------------------------------
-err sp d = Error [Error1 sp d]
+err sp d = Error [Error1 sp ((Text.pack . render) d)]
 
 ---------------------------------------------------------------------
 die :: Error -> a

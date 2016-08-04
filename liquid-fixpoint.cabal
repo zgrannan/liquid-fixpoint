@@ -133,6 +133,7 @@ Library
                , hashable
                , unordered-containers
                , cereal
+               , cereal-text
                , text-format
                , fgl
                , fgl-visualize
