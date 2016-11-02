@@ -59,8 +59,8 @@ funSort s1 s2 = FApp (FApp funcSort s1) s2
 
 instance Defunc Expr where
   defunc e = do
-    ho <- dfHO <$> get
-    txExpr ho e
+    _ho <- dfHO <$> get
+    txExpr _ho e
 
 
 txCastedExpr :: Expr -> DF Expr
