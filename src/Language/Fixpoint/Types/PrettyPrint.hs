@@ -90,7 +90,7 @@ showTable k = render . pprintKVs k
 
 
 debugOn :: Bool 
-debugOn = False 
+debugOn = True -- False 
 
 tracepp :: (PPrint a) => String -> a -> a
 tracepp s x
