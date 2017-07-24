@@ -73,8 +73,8 @@ instAxioms cfg ctx bds fenv aenv sid sub
     evalEqs          =
        map (uncurry (PAtom Eq)) .
        filter (uncurry (/=)) <$>
-       evaluate cfg ctx ({- (vv Nothing, slhs sub): -} binds) fenv aenv initExpressions
-    initExpressions  = {- expr (slhs sub) : -} expr (srhs sub) : (expr <$> binds)
+       evaluate cfg ctx ({- ADT-DEBUG (vv Nothing, slhs sub): -} binds) fenv aenv initExpressions
+    initExpressions  = {- ADT-DEBUG expr (slhs sub) : -} expr (srhs sub) : (expr <$> binds)
     binds            = envCs bds (senv sub)
     initOccurences   = concatMap (makeInitOccurences as eqs) initExpressions
 
