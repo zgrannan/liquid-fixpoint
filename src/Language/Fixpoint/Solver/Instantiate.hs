@@ -64,7 +64,7 @@ instAxioms _ _ _ _ aenv sid sub
   | not (M.lookupDefault False sid (aenvExpand aenv))
   = return sub
 instAxioms cfg ctx bds fenv aenv sid sub
-  = flip strengthenLhs sub . pAnd . (is0 ++) .
+  = flip strengthenLhs sub . tracepp ("instAxioms " ++ show sid) . pAnd . (is0 ++) .
     (if arithmeticAxioms cfg then (is ++) else id) <$>
     if rewriteAxioms cfg then evalEqs else return []
   where
@@ -73,8 +73,8 @@ instAxioms cfg ctx bds fenv aenv sid sub
     evalEqs          =
        map (uncurry (PAtom Eq)) .
        filter (uncurry (/=)) <$>
-       evaluate cfg ctx ((vv Nothing, slhs sub):binds) fenv aenv initExpressions
-    initExpressions  = expr (slhs sub) : expr (srhs sub) : (expr <$> binds)
+       evaluate cfg ctx ({- (vv Nothing, slhs sub): -} binds) fenv aenv initExpressions
+    initExpressions  = {- expr (slhs sub) : -} expr (srhs sub) : (expr <$> binds)
     binds            = envCs bds (senv sub)
     initOccurences   = concatMap (makeInitOccurences as eqs) initExpressions
 
