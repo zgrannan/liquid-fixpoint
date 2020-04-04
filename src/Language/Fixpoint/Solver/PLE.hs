@@ -353,18 +353,31 @@ notGuardedApps = go
     go (PAll _ _)      = []
     go (PExist _ _)    = []
     go (PGrad{})       = []
+  
+getRewriteVar :: Expr -> Maybe Expr
+getRewriteVar (EVar "Assoc.left")  = Just $ EVar "Assoc.right"
+-- getRewriteVar (EVar "Assoc.right") = Just $ EVar "Assoc.left"
+getRewriteVar _                    = Nothing
 
-toAssocRight :: Expr -> Expr
-toAssocRight expr =
-  let (_, args) = splitEApp expr
-  in eApps (EVar "Assoc.right") args
+getRewrite :: Expr -> Maybe Expr
+getRewrite expr =
+  let
+    (f, args) = splitEApp expr
+    rewriteVar = getRewriteVar f
+  in
+    fmap (`eApps` args) rewriteVar
 
-isAssocLeft :: Expr -> Bool
-isAssocLeft (EVar "Assoc.left") = True
-isAssocLeft _                   = False
+-- toAssocRight :: Expr -> Expr
+-- toAssocRight expr =
+--   let (_, args) = splitEApp expr
+--   in eApps (EVar "Assoc.right") args
 
-isAssocLeftApp :: Expr -> Bool
-isAssocLeftApp e = isAssocLeft $ fst (splitEApp e)
+-- isAssocLeft :: Expr -> Bool
+-- isAssocLeft (EVar "Assoc.left") = True
+-- isAssocLeft _                   = False
+
+-- isAssocLeftApp :: Expr -> Bool
+-- isAssocLeftApp e = isAssocLeft $ fst (splitEApp e)
 
 eval :: Knowledge -> ICtx -> Expr -> EvalST Expr
 eval _ ctx e
@@ -376,9 +389,9 @@ eval γ ctx e =
         Just e' -> eval γ ctx e'
         Nothing -> do
           e' <- simplify γ ctx <$> go e
-          let evAccum' st = if isAssocLeftApp e
-                then trace "isAssocLeftApp" $ S.insert (e, toAssocRight e) (evAccum st)
-                else trace "notApp" $ evAccum st
+          let evAccum' st = case getRewrite e of
+                Just rewrite -> trace "rewrite" $ S.insert (e, rewrite) (evAccum st)
+                Nothing      ->  evAccum st
           if e /= e'
             then do modify (\st -> st{evAccum = S.insert (traceE (e, e')) (evAccum' st) })
                     eval γ (addConst (e,e') ctx) e'
@@ -393,7 +406,7 @@ eval γ ctx e =
     go e@(EApp _ _)     = trace ("eval " ++ show e) (case splitEApp e of
                            (f, es) -> do
                                          (f':es') <- mapM (eval γ ctx) (f:es)
-                                         trace ("isAssocLeft " ++ show (isAssocLeft f')) $ evalApp γ (eApps f' es) (f',es'))
+                                         evalApp γ (eApps f' es) (f',es'))
     go e@(PAtom r e1 e2) = fromMaybeM (PAtom r <$> go e1 <*> go e2) (evalBool γ e)
     go (ENeg e)         = do e'  <- eval γ ctx e
                              return $ ENeg e'
