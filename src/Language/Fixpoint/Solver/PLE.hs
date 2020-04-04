@@ -354,6 +354,19 @@ notGuardedApps = go
     go (PExist _ _)    = []
     go (PGrad{})       = []
 
+getRewriteVar :: Expr -> Maybe Expr
+getRewriteVar (EVar "Assoc.left")  = Just $ EVar "Assoc.right"
+getRewriteVar (EVar "Assoc.right") = Just $ EVar "Assoc.left"
+getRewriteVar _                    = Nothing
+
+getRewrite :: Expr -> Maybe Expr
+getRewrite expr =
+  let
+    (f, args) = splitEApp expr
+    rewriteVar = getRewriteVar f
+  in
+    fmap (`eApps` args) rewriteVar
+
 eval :: Knowledge -> ICtx -> Expr -> EvalST Expr
 eval _ ctx e 
   | Just v <- M.lookup e (icSimpl ctx)
@@ -361,13 +374,17 @@ eval _ ctx e
 eval γ ctx e = 
   do acc <- S.toList . evAccum <$> get  
      case L.lookup e acc of 
-        Just e' -> eval γ ctx e' 
-        Nothing -> do 
+        Just e' | Just e' /= getRewrite e -> eval γ ctx e'
+        _ -> do
           e' <- simplify γ ctx <$> go e
+          let evAccum' st = case getRewrite e of
+                Just rewrite -> S.insert (e, rewrite) (evAccum st)
+                Nothing      -> evAccum st
           if e /= e' 
-            then do modify (\st -> st{evAccum = S.insert (traceE (e, e')) (evAccum st)})
+            then do modify (\st -> st{evAccum = S.insert (traceE (e, e')) (evAccum' st)})
                     eval γ (addConst (e,e') ctx) e' 
-            else return e 
+            else do modify (\st -> st{evAccum = evAccum' st })
+                    return e
   where 
     addConst (e,e') ctx = if isConstant (knDCs γ) e' 
                            then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
