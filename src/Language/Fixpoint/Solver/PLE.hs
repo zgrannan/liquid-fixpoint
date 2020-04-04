@@ -356,7 +356,7 @@ notGuardedApps = go
   
 getRewriteVar :: Expr -> Maybe Expr
 getRewriteVar (EVar "Assoc.left")  = Just $ EVar "Assoc.right"
--- getRewriteVar (EVar "Assoc.right") = Just $ EVar "Assoc.left"
+getRewriteVar (EVar "Assoc.right") = Just $ EVar "Assoc.left"
 getRewriteVar _                    = Nothing
 
 getRewrite :: Expr -> Maybe Expr
@@ -365,7 +365,7 @@ getRewrite expr =
     (f, args) = splitEApp expr
     rewriteVar = getRewriteVar f
   in
-    fmap (`eApps` args) rewriteVar
+    trace "GetRewrite" $ fmap (`eApps` args) rewriteVar
 
 -- toAssocRight :: Expr -> Expr
 -- toAssocRight expr =
@@ -386,8 +386,8 @@ eval _ ctx e
 eval γ ctx e =
   do acc <- S.toList . evAccum <$> get
      case L.lookup e acc of
-        Just e' -> eval γ ctx e'
-        Nothing -> do
+        Just e' | Just e' /= getRewrite e -> eval γ ctx e'
+        _ -> do
           e' <- simplify γ ctx <$> go e
           let evAccum' st = case getRewrite e of
                 Just rewrite -> trace "rewrite" $ S.insert (e, rewrite) (evAccum st)
