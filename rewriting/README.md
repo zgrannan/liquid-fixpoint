@@ -24,7 +24,7 @@ Proposed Solution
 -----------------
 
 Although encoding such proofs in SMT directly as universally-quantified
-equalities is possible, in practice this leads to divergence.
+assertions is possible, in practice this leads to divergence.
 
 Instead, the proposed solution is to allow equalities to be annotated with a
 `rewrite` pragma if the user wishes for them to be applied automatically.
@@ -130,7 +130,7 @@ example, `const 1 2`), we can generate the rewrite equality (`const 1 2 =
 2`). However, if we encounter an expression that matches the right-hand side
 of the equality, it's not possible to generate the left-hand side because we
 don't have a fixed value for `x`. Technically speaking, this would require
-the generation of an universally-quantified SMT equality, which could cause
+the generation of an universally-quantified SMT assertion, which could cause
 divergence.
 
 Furthermore, if the left-hand side of an equality includes variables that
@@ -226,3 +226,23 @@ set a limit of how many times rewriting could occur, for example, by
 ensuring that any chain of rewrites starting from an expression must be less
 than 10 expressions. Such a limit may be desirable for performance reasons
 anyways.
+
+Questions
+---------
+
+How can we generate the substitution for the rewrite? For example, if
+we encounter a term like
+
+```
+xs ++ ([1,2,3] ++ f y)
+```
+
+how do we match with the right-hand side of `assoc` and get the substitution
+
+```
+as = xs
+bs = [1,2,3]
+cs = f y
+```
+
+
