@@ -1,0 +1,36 @@
+fixpoint "--rewrite"
+
+data List 0 = [
+  | VNil  { }
+  | VCons { head: Int, tail : List} 
+]
+
+define concat (left : List, right : List) : List = {
+  if (is$VNil left) then 
+    right else 
+  (concat (head left) (concat (tail left) right))
+}
+
+define concat3Left (as : List, bs : List, cs : List) : List = {
+  concat (concat as bs) (concat cs)
+}
+
+define concat3Right (as : List, bs : List, cs : List) : List = {
+  concat as (concat bc cs)
+}
+
+autorewrite as bs cs { concat3Left as bs cs = concat3Right as bs cs }
+
+constant concat3Left  : (func(0, [List; List; List; List]))
+constant concat3Right : (func(0, [List; List; List; List]))
+
+
+bind 0 xs : {v: List | true }
+bind 1 ys : {v: List | true }
+bind 2 zs : {v: List | true }
+
+constraint:
+  env [0; 1; 2]
+  lhs {v1 : List | v1 = concat3Left  xs ys zs }
+  rhs {v2 : List | v2 = concat3Right xs ys zs }
+  id 1 tag []
