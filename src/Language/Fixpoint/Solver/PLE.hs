@@ -354,18 +354,15 @@ notGuardedApps = go
     go (PExist _ _)    = []
     go (PGrad{})       = []
 
-getRewriteVar :: Expr -> Maybe Expr
-getRewriteVar (EVar "Assoc.left")  = Just $ EVar "Assoc.right"
-getRewriteVar (EVar "Assoc.right") = Just $ EVar "Assoc.left"
-getRewriteVar _                    = Nothing
+getRWSubst :: [Symbol] -> Expr -> Expr -> Maybe Subst
+getRWSubst _ rwLHS seenExpr =
+  if rwLHS == seenExpr
+  then Just (Su M.empty)
+  else Just (Su (M.fromList [("as", EVar "xs"), ("bs",EVar "ys"),("cs", EVar "zs")]))
 
-getRewrite :: Expr -> Maybe Expr
-getRewrite expr =
-  let
-    (f, args) = splitEApp expr
-    rewriteVar = getRewriteVar f
-  in
-    fmap (`eApps` args) rewriteVar
+getRewrite :: Expr -> AutoRewrite -> Maybe Expr
+getRewrite expr (AutoRewrite freeVars lhs rhs) =
+  fmap ((flip subst) rhs) (getRWSubst freeVars lhs expr)
 
 eval :: Knowledge -> ICtx -> Expr -> EvalST Expr
 eval _ ctx e 
@@ -374,18 +371,18 @@ eval _ ctx e
 eval γ ctx e = 
   do acc <- S.toList . evAccum <$> get  
      case L.lookup e acc of 
-        Just e' | Just e' /= getRewrite e -> eval γ ctx e'
+        Just e' | not (e' `elem` getRWs e) -> eval γ ctx e'
         _ -> do
           e' <- simplify γ ctx <$> go e
-          let evAccum' st = case getRewrite e of
-                Just rewrite -> S.insert (e, rewrite) (evAccum st)
-                Nothing      -> evAccum st
-          if e /= e' 
+          let evAccum' st = S.union (S.fromList (map (e,) (getRWs e))) (evAccum st)
+          if e /= e'
             then do modify (\st -> st{evAccum = S.insert (traceE (e, e')) (evAccum' st)})
                     eval γ (addConst (e,e') ctx) e' 
             else do modify (\st -> st{evAccum = evAccum' st })
                     return e
-  where 
+  where
+    autorws  = trace ("Autorws: " ++ (show (knAutoRWs γ))) (knAutoRWs γ)
+    getRWs e = autorws >>= (Mb.maybeToList . (getRewrite e))
     addConst (e,e') ctx = if isConstant (knDCs γ) e' 
                            then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
     go (ELam (x,s) e)   = ELam (x, s) <$> eval γ' ctx e where γ' = γ { knLams = (x, s) : knLams γ }
@@ -511,6 +508,7 @@ data Knowledge = KN
   , knDCs     :: !(S.HashSet Symbol)     -- data constructors drawn from Rewrite 
   , knSels    :: !(SelectorMap) 
   , knConsts  :: !(ConstDCMap)
+  , knAutoRWs :: ![AutoRewrite]
   }
 
 isValid :: Knowledge -> Expr -> IO Bool
@@ -532,6 +530,7 @@ knowledge cfg ctx si = KN
   , knDCs     = S.fromList (smDC <$> sims) 
   , knSels    = Mb.catMaybes $ map makeSel  sims 
   , knConsts  = Mb.catMaybes $ map makeCons sims 
+  , knAutoRWs = aenvAutoRW aenv
   } 
   where 
     sims = aenvSimpl aenv ++ concatMap reWriteDDecl (ddecls si) 
