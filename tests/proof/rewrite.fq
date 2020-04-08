@@ -30,11 +30,9 @@ expand [1 : True]
 bind 0 xs    : {v: List | true }
 bind 1 ys    : {v: List | true }
 bind 2 zs    : {v: List | true }
-bind 3 proof : {v: List | concat3Left xs zs zs       = concat xs (concat ys zs)}
-bind 4 proof2 : {v: List | concat (concat xs ys) zs = concat xs (concat ys zs)}
 
 constraint:
-  env [0; 1; 2; 3; 4]
+  env [0; 1; 2]
   lhs {v1 : List | true  }
   rhs {v2 : List | concat3Left xs ys zs = concat3Right xs ys zs }
   id 1 tag []

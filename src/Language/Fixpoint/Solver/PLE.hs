@@ -355,10 +355,9 @@ notGuardedApps = go
     go (PGrad{})       = []
 
 getRWSubst :: [Symbol] -> Expr -> Expr -> Maybe Subst
-getRWSubst _ rwLHS seenExpr =
-  if rwLHS == seenExpr
-  then Just (Su M.empty)
-  else Just (Su (M.fromList [("as", EVar "xs"), ("bs",EVar "ys"),("cs", EVar "zs")]))
+getRWSubst _ _ seenExpr = case splitEApp seenExpr of
+  (EVar "concat3Left", [_,_,_]) -> Just (Su (M.fromList [("as", EVar "xs"), ("bs",EVar "ys"),("cs", EVar "zs")]))
+  _ -> Nothing
 
 getRewrite :: Expr -> AutoRewrite -> Maybe Expr
 getRewrite expr (AutoRewrite freeVars lhs rhs) =
