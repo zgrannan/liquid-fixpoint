@@ -355,13 +355,25 @@ notGuardedApps = go
     go (PGrad{})       = []
 
 getRWSubst :: [Symbol] -> Expr -> Expr -> Maybe Subst
-getRWSubst _ _ seenExpr = case splitEApp seenExpr of
-  (EVar "concat3Left", [_,_,_]) -> Just (Su (M.fromList [("as", EVar "xs"), ("bs",EVar "ys"),("cs", EVar "zs")]))
+getRWSubst _ rwLHS seenExpr | rwLHS == seenExpr = Just (Su M.empty)
+getRWSubst freeVars rwLHS seenExpr = case (rwLHS, seenExpr) of
+  (EVar rwVar, _) ->
+    guard (rwVar `elem` freeVars) >> return (Su (M.singleton rwVar seenExpr))
+  (EApp rwFunc rwBody, EApp seenFunc seenBody) ->
+    do
+      resultSubst@(Su s1) <- getRWSubst freeVars rwFunc seenFunc
+      let rwBody'   = subst resultSubst rwBody
+      let seenBody' = subst resultSubst seenBody
+      (Su s2) <- getRWSubst (freeVars L.\\ M.keys s1) rwBody' seenBody'
+      return $ Su (M.union s1 s2)
   _ -> Nothing
+
 
 getRewrite :: Expr -> AutoRewrite -> Maybe Expr
 getRewrite expr (AutoRewrite freeVars lhs rhs) =
-  fmap ((flip subst) rhs) (getRWSubst freeVars lhs expr)
+  do
+    expr' <- fmap ((flip subst) rhs) (getRWSubst freeVars lhs expr)
+    if expr /= expr' then Just expr' else Nothing
 
 eval :: Knowledge -> ICtx -> Expr -> EvalST Expr
 eval _ ctx e 
