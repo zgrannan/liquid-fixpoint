@@ -354,25 +354,65 @@ notGuardedApps = go
     go (PExist _ _)    = []
     go (PGrad{})       = []
 
-getRWSubst :: [Symbol] -> Expr -> Expr -> Maybe Subst
-getRWSubst _ rwLHS seenExpr | rwLHS == seenExpr = Just (Su M.empty)
-getRWSubst freeVars rwLHS seenExpr = case (rwLHS, seenExpr) of
-  (EVar rwVar, _) ->
-    guard (rwVar `elem` freeVars) >> return (Su (M.singleton rwVar seenExpr))
-  (EApp rwFunc rwBody, EApp seenFunc seenBody) ->
-    do
-      resultSubst@(Su s1) <- getRWSubst freeVars rwFunc seenFunc
-      let rwBody'   = subst resultSubst rwBody
-      let seenBody' = subst resultSubst seenBody
-      (Su s2) <- getRWSubst (freeVars L.\\ M.keys s1) rwBody' seenBody'
-      return $ Su (M.union s1 s2)
+unifyAll :: [Symbol] -> [Expr] -> [Expr] -> Maybe Subst
+unifyAll _ []     []               = Just (Su M.empty)
+unifyAll freeVars (template:xs) (seen:ys) =
+  do
+    rs@(Su s1) <- unify freeVars template seen
+    let xs' = map (subst rs) xs
+    let ys' = map (subst rs) ys
+    (Su s2) <- unifyAll (freeVars L.\\ M.keys s1) xs' ys'
+    return $ Su (M.union s1 s2)
+unifyAll _ _ _ = undefined
+
+unify :: [Symbol] -> Expr -> Expr -> Maybe Subst
+unify _ template seenExpr | template == seenExpr = Just (Su M.empty)
+unify freeVars template seenExpr = case (template, seenExpr) of
+  (EVar rwVar, _) | rwVar `elem` freeVars ->
+    return $ Su (M.singleton rwVar seenExpr)
+  (EApp templateF templateBody, EApp seenF seenBody) ->
+    unifyAll freeVars [templateF, templateBody] [seenF, seenBody]
+  (ENeg rw, ENeg seen) ->
+    unify freeVars rw seen
+  (EBin op rwLeft rwRight, EBin op' seenLeft seenRight) | op == op' ->
+    unifyAll freeVars [rwLeft, rwRight] [seenLeft, seenRight]
+  (EIte cond rwLeft rwRight, EIte seenCond seenLeft seenRight) ->
+    unifyAll freeVars [cond, rwLeft, rwRight] [seenCond, seenLeft, seenRight]
+  (ECst rw _, ECst seen _) ->
+    unify freeVars rw seen
+  (ELam _ rw, ELam _ seen) ->
+    unify freeVars rw seen
+  (ETApp rw _, ETApp seen _) ->
+    unify freeVars rw seen
+  (ETAbs rw _, ETAbs seen _) ->
+    unify freeVars rw seen
+  (PAnd rw, PAnd seen ) ->
+    unifyAll freeVars rw seen
+  (POr rw, POr seen ) ->
+    unifyAll freeVars rw seen
+  (PNot rw, PNot seen) ->
+    unify freeVars rw seen
+  (PImp templateF templateBody, PImp seenF seenBody) ->
+    unifyAll freeVars [templateF, templateBody] [seenF, seenBody]
+  (PIff templateF templateBody, PIff seenF seenBody) ->
+    unifyAll freeVars [templateF, templateBody] [seenF, seenBody]
+  (PAtom rel templateF templateBody, PAtom rel' seenF seenBody) | rel == rel' ->
+    unifyAll freeVars [templateF, templateBody] [seenF, seenBody]
+  (PAll _ rw, PAll _ seen) ->
+    unify freeVars rw seen
+  (PExist _ rw, PExist _ seen) ->
+    unify freeVars rw seen
+  (PGrad _ _ _ rw, PGrad _ _ _ seen) ->
+    unify freeVars rw seen
+  (ECoerc _ _ rw, ECoerc _ _ seen) ->
+    unify freeVars rw seen
   _ -> Nothing
 
 
 getRewrite :: Expr -> AutoRewrite -> Maybe Expr
 getRewrite expr (AutoRewrite freeVars lhs rhs) =
   do
-    expr' <- fmap ((flip subst) rhs) (getRWSubst freeVars lhs expr)
+    expr' <- fmap ((flip subst) rhs) (unify freeVars lhs expr)
     if expr /= expr' then Just expr' else Nothing
 
 eval :: Knowledge -> ICtx -> Expr -> EvalST Expr
@@ -392,7 +432,7 @@ eval γ ctx e =
             else do modify (\st -> st{evAccum = evAccum' st })
                     return e
   where
-    autorws  = trace ("Autorws: " ++ (show (knAutoRWs γ))) (knAutoRWs γ)
+    autorws  = knAutoRWs γ
     getRWs e = autorws >>= (Mb.maybeToList . (getRewrite e))
     addConst (e,e') ctx = if isConstant (knDCs γ) e' 
                            then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
