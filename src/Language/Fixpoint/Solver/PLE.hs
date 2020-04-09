@@ -380,8 +380,6 @@ unify freeVars template seenExpr = case (template, seenExpr) of
     unifyAll freeVars [cond, rwLeft, rwRight] [seenCond, seenLeft, seenRight]
   (ECst rw _, ECst seen _) ->
     unify freeVars rw seen
-  (ELam _ rw, ELam _ seen) ->
-    unify freeVars rw seen
   (ETApp rw _, ETApp seen _) ->
     unify freeVars rw seen
   (ETAbs rw _, ETAbs seen _) ->

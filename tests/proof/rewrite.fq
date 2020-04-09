@@ -19,9 +19,9 @@ define concat3Right (as : List, bs : List, cs : List) : List = {
   concat as (concat bs cs)
 }
 
-autorewrite as bs cs { concat3Left as bs cs = concat3Right as bs cs }
+autorewrite as bs cs { concat (concat as bs) cs = concat as (concat bs cs) }
 
-autorewrite as bs cs { concat3Right as bs cs = concat3Left as bs cs }
+autorewrite as bs cs { concat as (concat bs cs) = concat (concat as bs) cs }
 
 constant concat       : (func(0, [List;List;List]))
 constant concat3Left  : (func(0, [List; List; List; List]))
