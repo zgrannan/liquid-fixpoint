@@ -449,13 +449,22 @@ getRewrites γ symEnv expr@(EApp lhs rhs) ar = do
 getRewrites γ symEnv expr ar =
   Mb.maybeToList <$> runMaybeT (getRewrite γ symEnv expr ar)
 
-getRewrite :: Knowledge -> SymEnv -> Expr -> AutoRewrite -> MaybeT IO Expr
+mpoLTE :: Knowledge -> [Equation] -> Expr -> Expr -> Bool
+mpoLTE eqs _ (ESym _)              = True
+mpoLTE eqs _ (ECon _)              = True
+mpoLTE eqs lhs (EVar sym)
+  | Just eq <- find (== sym . eqName) eqs = mpoLTE lhs eq
+  | otherwise = True
+mpoLTE eqs (EApp f x) (EApp f' x') = True
+  
 
+getRewrite :: Knowledge -> SymEnv -> Expr -> AutoRewrite -> MaybeT IO Expr
 getRewrite γ symEnv expr (AutoRewrite args lhs rhs) =
   do
     su@(Su suMap) <- MaybeT $ return $ unify freeVars lhs expr
     let expr' = subst su rhs
     guard $ expr /= expr'
+    guard $ mpoLTE symEnv expr expr' 
     let (argSorts', exprSorts') = sortsToUnify (M.toList suMap)
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
     checkSorts argSorts exprSorts
