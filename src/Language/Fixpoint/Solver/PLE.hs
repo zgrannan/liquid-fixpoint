@@ -449,13 +449,37 @@ getRewrites γ symEnv expr@(EApp lhs rhs) ar = do
 getRewrites γ symEnv expr ar =
   Mb.maybeToList <$> runMaybeT (getRewrite γ symEnv expr ar)
 
-mpoLTE :: Knowledge -> [Equation] -> Expr -> Expr -> Bool
-mpoLTE eqs _ (ESym _)              = True
-mpoLTE eqs _ (ECon _)              = True
-mpoLTE eqs lhs (EVar sym)
-  | Just eq <- find (== sym . eqName) eqs = mpoLTE lhs eq
-  | otherwise = True
-mpoLTE eqs (EApp f x) (EApp f' x') = True
+multiSetRpoGTE _     []      =  True
+multiSetRpoGTE [] (_:_)      =  False
+multiSetRpoGTE xs ys =
+  let
+    xs' = filter (\x -> all (\y -> rpoGTE x y) ys) xs
+    ys' = filter (\y -> all (\x -> rpoGTE y x) xs) ys
+  in
+    if
+      length xs' > length ys' then True
+    else
+      if
+        length ys' > length xs' then False
+      else
+        multiSetRpoGTE (xs L.\\ xs') (ys L.\\ ys')
+  
+rpoGTE ::  Expr -> Expr -> Bool
+rpoGTE _ (ESym _)      = True
+rpoGTE _ (ECon _)      = True
+rpoGTE _ (EVar _)      = True
+rpoGTE e e'@(EApp _ _) = rpoGTEApp e e'
+rpoGTE e@(EApp _ _) e' = rpoGTEApp e e'
+rpoGTE e e' = error (show e ++ "\n\n---\n\n" ++ show e')
+
+rpoGTEApp e e' =
+  let
+    (f, xs) = splitEApp e
+    (g, ys) = splitEApp e'
+  in
+    if f == g
+    then multiSetRpoGTE xs ys
+    else multiSetRpoGTE xs [e']
   
 
 getRewrite :: Knowledge -> SymEnv -> Expr -> AutoRewrite -> MaybeT IO Expr
@@ -464,7 +488,9 @@ getRewrite γ symEnv expr (AutoRewrite args lhs rhs) =
     su@(Su suMap) <- MaybeT $ return $ unify freeVars lhs expr
     let expr' = subst su rhs
     guard $ expr /= expr'
-    guard $ mpoLTE symEnv expr expr' 
+    guard $ if rpoGTE expr expr'
+            then True
+            else trace (show expr ++ "\n\n<\n\n" ++ show expr') False
     let (argSorts', exprSorts') = sortsToUnify (M.toList suMap)
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
     checkSorts argSorts exprSorts
