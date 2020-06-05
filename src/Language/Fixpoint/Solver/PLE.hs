@@ -481,11 +481,12 @@ eval γ ctx path =
         Just e -> eval γ ctx (path ++ [e])
         _ -> do
           let e = last path
+          rws <- getRWs e
           e'  <- simplify γ ctx <$> go e
+          let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
+          modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
           if e /= e'
-            then do modify (\st -> st { evAccum = S.insert (path, e') (evAccum st)
-                                      })
-                    eval γ (addConst (e,e') ctx) (path ++ [e'])
+            then eval γ (addConst (e,e') ctx) (path ++ [e'])
             else return e
   where
     autorws  =
