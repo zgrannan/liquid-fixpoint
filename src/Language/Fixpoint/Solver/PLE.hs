@@ -8,6 +8,7 @@
 --     2. "Reasoning about Functions", VMCAI 2018, https://ranjitjhala.github.io/static/reasoning-about-functions.pdf 
 --------------------------------------------------------------------------------
 
+{-# LANGUAGE DeriveGeneric         #-}
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE PartialTypeSignatures     #-}
 {-# LANGUAGE TupleSections             #-}
@@ -33,6 +34,9 @@ import           Language.Fixpoint.Graph.Deps             (isTarget)
 import           Language.Fixpoint.Solver.Sanitize        (symbolEnv)
 import           Control.Monad.State
 import           Control.Monad.Trans.Maybe
+import           Data.Hashable
+import           GHC.Generics
+import           Data.Generics (Data)
 import qualified Data.HashMap.Strict  as M
 import qualified Data.HashSet         as S
 import qualified Data.List            as L
@@ -421,23 +425,143 @@ unify freeVars template seenExpr = case (template, seenExpr) of
     unify freeVars rw seen
   _ -> Nothing
 
-getRewrites :: Knowledge -> SymEnv -> Expr -> AutoRewrite -> IO [Expr]
-getRewrites γ symEnv expr@(EApp lhs rhs) ar = do
-  base   <- runMaybeT (getRewrite γ symEnv expr ar)
-  lhs'   <- getRewrites γ symEnv lhs ar
-  rhs'   <- getRewrites γ symEnv rhs ar
-  return $ Mb.maybeToList base
-    ++ [ EApp l r | l <- lhs:lhs'
-                  , r <- rhs:rhs'
-                  , l /= lhs || r /= rhs]
+type Op = Symbol
+type OpOrdering = [Symbol]
+type Term = Expr
 
-getRewrites γ symEnv expr ar =
-  Mb.maybeToList <$> runMaybeT (getRewrite γ symEnv expr ar)
+data SCDir =
+    SCUp
+  | SCEq 
+  | SCDown
+  deriving (Eq, Ord, Show, Generic)
 
-getRewrite :: Knowledge -> SymEnv -> Expr -> AutoRewrite -> MaybeT IO Expr
+instance Hashable SCDir
 
-getRewrite γ symEnv expr (AutoRewrite args lhs rhs) =
+type SCPath = ((Op, Int), (Op, Int), [SCDir])
+
+data SCEntry = SCEntry {
+    from :: (Op, Int)
+  , to   :: (Op, Int)
+  , dir  :: SCDir
+} deriving (Eq, Ord, Show, Generic)
+
+instance Hashable SCEntry
+
+getDir :: OpOrdering -> Term -> Term -> SCDir
+getDir o (EVar _) (EVar _) = SCEq
+getDir o from to =
+  case (synGTE o from to, synGTE o to from) of
+      (True, True)  -> SCEq
+      (True, False) -> SCDown
+      (False, _)    -> SCUp
+
+getSC :: OpOrdering -> Term -> Term -> S.HashSet SCEntry
+getSC o l r = case (splitEApp l, splitEApp r) of
+  ((EVar op, ts), (EVar op', us)) ->
+    S.fromList $ do
+      (i, from) <- zip [0..] ts
+      (j, to)   <- zip [0..] us
+      return $ SCEntry (op, i) (op', j) (getDir o from to)
+  _ -> S.empty
+
+scp :: OpOrdering -> [Expr] -> S.HashSet SCPath
+scp _ []       = S.empty
+scp _ [_]      = S.empty
+scp o [t1, t2] = S.fromList $ do
+  (SCEntry a b d) <- S.toList $ getSC o t1 t2
+  return (a, b, [d])
+scp o (t1:t2:trms) = S.fromList $ do
+  (SCEntry a b' d) <- S.toList $ getSC o t1 t2
+  (a', b, ds)      <- S.toList $ scp o (t2:trms)
+  guard $ b' == a'
+  return (a, b, d:ds)
+
+synEQ :: OpOrdering -> Expr -> Expr -> Bool
+synEQ o l r = synGTE o l r && synGTE o r l
+
+opGT :: OpOrdering -> Op -> Op -> Bool
+opGT ordering op1 op2 = case (L.elemIndex op1 ordering, L.elemIndex op2 ordering)  of
+  (Just index1, Just index2) -> index1 > index2
+  _ -> False
+
+removeSynEQs :: OpOrdering -> [Expr] -> [Expr] -> ([Expr], [Expr])
+removeSynEQs _ [] ys      = ([], ys)
+removeSynEQs ordering (x:xs) ys
+  | Just yIndex <- L.findIndex (synEQ ordering x) ys
+  = removeSynEQs ordering xs $ take yIndex ys ++ drop (yIndex + 1) ys
+  | otherwise =
+    let
+      (xs', ys') = removeSynEQs ordering xs ys
+    in
+      (x:xs', ys')
+
+synGTEM ordering xs ys =     
+  case removeSynEQs ordering xs ys of
+    (_   , []) -> True
+    (xs', ys') -> any (\x -> all (synGT ordering x) ys') xs'
+    
+synGT :: OpOrdering -> Term -> Term -> Bool
+synGT o t1 t2 = synGTE o t1 t2 && not (synGTE o t2 t1)
+    
+synGTE :: OpOrdering -> Expr -> Expr -> Bool
+synGTE _        (EVar x)          (EVar y)         = x == y
+synGTE _        (EVar x)          (EApp _ _)       = False
+synGTE _        app@(EApp _ trms) (EVar x)         = x `L.elem` (syms app)
+synGTE ordering t1 t2 = case (splitEApp t1, splitEApp t2) of
+  ((EVar x, tms), (EVar y, tms')) ->
+    if opGT ordering x y then
+      synGTEM ordering [t1] tms'
+    else if opGT ordering y x then
+      synGTEM ordering tms [t2]
+    else
+      synGTEM ordering tms tms'
+
+
+powerset [] = [[]]
+powerset (x:xs) = [x:ps | ps <- powerset xs] ++ powerset xs
+    
+orderings :: S.HashSet Op -> S.HashSet OpOrdering
+orderings ops = S.fromList $ do
+  ops' <- powerset (S.toList ops)
+  L.permutations ops'
+
+diverges :: [Expr] -> Bool
+diverges terms = all diverges' orderings'
+  where
+   orderings'  = orderings $ S.fromList $ L.concatMap syms terms
+   diverges' o = divergesFor o terms
+   
+divergesFor :: OpOrdering -> [Expr] -> Bool
+divergesFor o trms = any diverges' (L.subsequences trms)
+  where
+    diverges' :: [Expr] -> Bool
+    diverges' trms' =
+      any ascending (scp o trms') && all (not . descending) (scp o trms')
+      
+descending :: SCPath -> Bool
+descending (a, b, ds) = a == b && L.elem SCDown ds && L.notElem SCUp ds
+
+ascending :: SCPath -> Bool
+ascending  (a, b, ds) = a == b && L.elem SCUp ds
+
+getRewrites :: Knowledge -> SymEnv -> [Expr] -> AutoRewrite -> IO [Expr]
+getRewrites γ symEnv path ar =
+  Mb.maybeToList <$> runMaybeT (getRewrite γ symEnv path ar)
+  
+-- getRewrites γ symEnv expr@(EApp lhs rhs) ar = do
+--   base   <- runMaybeT (getRewrite γ symEnv expr ar)
+--   lhs'   <- getRewrites γ symEnv lhs ar
+--   rhs'   <- getRewrites γ symEnv rhs ar
+--   return $ Mb.maybeToList base
+--     ++ [ EApp l r | l <- lhs:lhs'
+--                   , r <- rhs:rhs'
+--                   , l /= lhs || r /= rhs]
+
+
+getRewrite :: Knowledge -> SymEnv -> [Expr] -> AutoRewrite -> MaybeT IO Expr
+getRewrite γ symEnv path (AutoRewrite args lhs rhs) =
   do
+    let expr = last path
     su@(Su suMap) <- MaybeT $ return $ unify freeVars lhs expr
     let expr' = subst su rhs
     guard $ expr /= expr'
@@ -445,6 +569,7 @@ getRewrite γ symEnv expr (AutoRewrite args lhs rhs) =
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
     checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
+    guard $ not $ diverges $ path ++ [expr']
     return expr'
   where
     check :: Expr -> MaybeT IO ()
@@ -480,8 +605,8 @@ eval γ ctx path =
      case L.lookup path acc of
         Just e -> eval γ ctx (path ++ [e])
         _ -> do
-          let e = last path
-          rws <- getRWs e
+          let e = trace (show $ length path) last path
+          rws <- getRWs 
           e'  <- simplify γ ctx <$> go e
           let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
           modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
@@ -494,10 +619,10 @@ eval γ ctx path =
         cid <- icSubcId ctx
         M.lookup cid $ knAutoRWs γ
 
-    getRWs :: Expr -> EvalST [Expr]
-    getRWs e = do
+    getRWs :: EvalST [Expr]
+    getRWs = do
       env <- gets evEnv
-      concat <$> mapM (liftIO . getRewrites γ env e) autorws
+      concat <$> mapM (liftIO . getRewrites γ env path) autorws
 
     addConst (e,e') ctx = if isConstant (knDCs γ) e'
                            then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
