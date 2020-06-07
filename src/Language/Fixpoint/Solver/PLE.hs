@@ -515,6 +515,7 @@ synGTE ordering t1 t2 = case (splitEApp t1, splitEApp t2) of
       synGTEM ordering tms [t2]
     else
       synGTEM ordering tms tms'
+  _ -> False
 
 
 powerset [] = [[]]
@@ -525,11 +526,16 @@ orderings ops = S.fromList $ do
   ops' <- powerset (S.toList ops)
   L.permutations ops'
 
+opSyms :: Expr -> S.HashSet Symbol
+opSyms (EApp (EVar op) ts) = S.insert op (opSyms ts)
+opSyms _ = S.empty
+
 diverges :: [Expr] -> Bool
 diverges terms = all diverges' orderings'
   where
-   orderings'  = orderings $ S.fromList $ L.concatMap syms terms
-   diverges' o = divergesFor o terms
+   syms'       = S.unions (map opSyms terms)
+   orderings'  = orderings $ trace ((show (S.size syms') ++ " unique syms")) syms'
+   diverges' o = trace ("Divergence check for " ++ show o) $ divergesFor o terms
    
 divergesFor :: OpOrdering -> [Expr] -> Bool
 divergesFor o trms = any diverges' (L.subsequences trms)
