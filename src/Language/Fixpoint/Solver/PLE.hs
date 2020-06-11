@@ -504,9 +504,9 @@ synGT :: OpOrdering -> Term -> Term -> Bool
 synGT o t1 t2 = synGTE o t1 t2 && not (synGTE o t2 t1)
     
 synGTE :: OpOrdering -> Expr -> Expr -> Bool
-synGTE _        (EVar x)          (EVar y)         = x == y
+synGTE _        (EVar _)          (EVar _)         = True
 synGTE _        (EVar x)          (EApp _ _)       = False
-synGTE _        app@(EApp _ trms) (EVar x)         = x `L.elem` (syms app)
+synGTE _        app@(EApp _ trms) (EVar x)         = True
 synGTE ordering t1 t2 = case (splitEApp t1, splitEApp t2) of
   ((EVar x, tms), (EVar y, tms')) ->
     if opGT ordering x y then
@@ -545,7 +545,7 @@ divergesFor o trms = any diverges' (L.subsequences trms)
       any ascending (scp o trms') && all (not . descending) (scp o trms')
       
 descending :: SCPath -> Bool
-descending (a, b, ds) = a == b && L.elem SCDown ds && L.notElem SCUp ds
+descending (a, b, ds) = L.elem SCDown ds && L.notElem SCUp ds
 
 ascending :: SCPath -> Bool
 ascending  (a, b, ds) = a == b && L.elem SCUp ds
@@ -607,18 +607,15 @@ eval _ ctx path
   | Just v <- M.lookup (last path) (icSimpl ctx)
   = return v
 eval γ ctx path =
-  do acc       <- S.toList . evAccum <$> get
-     case L.lookup path acc of
-        Just e -> eval γ ctx (path ++ [e])
-        _ -> do
-          let e = trace (show $ length path) last path
-          rws <- getRWs 
-          e'  <- simplify γ ctx <$> go e
-          let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
-          modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
-          if e /= e'
-            then eval γ (addConst (e,e') ctx) (path ++ [e'])
-            else return e
+  do
+    let e = trace (show $ length path) last path
+    rws <- getRWs 
+    e'  <- simplify γ ctx <$> go e
+    let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
+    modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
+    if e /= e'
+      then eval γ (addConst (e,e') ctx) (path ++ [e'])
+      else return e
   where
     autorws  =
       Mb.fromMaybe [] $ do
