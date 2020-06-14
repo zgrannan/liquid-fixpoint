@@ -36,7 +36,7 @@ import           Control.Monad.State
 import           Control.Monad.Trans.Maybe
 import           Data.Hashable
 import           GHC.Generics
-import           Data.Generics (Data)
+import           Data.Generics()
 import qualified Data.HashMap.Strict  as M
 import qualified Data.HashSet         as S
 import qualified Data.List            as L
@@ -45,14 +45,6 @@ import           Debug.Trace          (trace)
 
 mytracepp :: (PPrint a) => String -> a -> a
 mytracepp = notracepp
-
-traceE :: (Expr,Expr) -> (Expr,Expr)
-traceE (e,e') 
-  | False -- True 
-  , e /= e' 
-  = trace ("\n" ++ showpp e ++ " ~> " ++ showpp e') (e,e') 
-  | otherwise 
-  = (e,e')
 
 --------------------------------------------------------------------------------
 -- | Strengthen Constraint Environments via PLE 
@@ -135,7 +127,11 @@ ple1 (InstEnv {..}) ctx i res =
 evalToSMT :: String -> Config -> SMT.Context -> (Expr, Expr) -> Pred 
 evalToSMT msg cfg ctx (e1,e2) = toSMT ("evalToSMT:" ++ msg) cfg ctx [] (EEq e1 e2)
 
-toPairs = S.map (\(a,b) -> (last a, b)) 
+toPairs :: S.HashSet ([Expr], Expr) -> S.HashSet (Expr, Expr)
+toPairs = S.map (\(a,b) -> (last a, b))
+
+
+fromPairs :: S.HashSet (Expr, Expr) -> S.HashSet ([Expr], Expr)
 fromPairs = S.map (\(a,b) -> ([a], b)) 
 
 evalCandsLoop :: Config -> ICtx -> SMT.Context -> Knowledge -> EvalEnv -> IO ICtx 
@@ -448,7 +444,7 @@ data SCEntry = SCEntry {
 instance Hashable SCEntry
 
 getDir :: OpOrdering -> Term -> Term -> SCDir
-getDir o (EVar _) (EVar _) = SCEq
+getDir _ (EVar _) (EVar _) = SCEq
 getDir o from to =
   case (synGTE o from to, synGTE o to from) of
       (True, True)  -> SCEq
@@ -495,6 +491,7 @@ removeSynEQs ordering (x:xs) ys
     in
       (x:xs', ys')
 
+synGTEM :: OpOrdering -> [Expr] -> [Expr] -> Bool
 synGTEM ordering xs ys =     
   case removeSynEQs ordering xs ys of
     (_   , []) -> True
@@ -504,9 +501,9 @@ synGT :: OpOrdering -> Term -> Term -> Bool
 synGT o t1 t2 = synGTE o t1 t2 && not (synGTE o t2 t1)
     
 synGTE :: OpOrdering -> Expr -> Expr -> Bool
-synGTE _        (EVar _)          (EVar _)         = True
-synGTE _        (EVar x)          (EApp _ _)       = False
-synGTE _        app@(EApp _ trms) (EVar x)         = True
+synGTE _        (EVar _)   (EVar _)   = True
+synGTE _        (EVar _)   (EApp _ _) = False
+synGTE _        (EApp _ _) (EVar _)   = True
 synGTE ordering t1 t2 = case (splitEApp t1, splitEApp t2) of
   ((EVar x, tms), (EVar y, tms')) ->
     if opGT ordering x y then
@@ -518,6 +515,7 @@ synGTE ordering t1 t2 = case (splitEApp t1, splitEApp t2) of
   _ -> False
 
 
+powerset :: [a] -> [[a]]
 powerset [] = [[]]
 powerset (x:xs) = [x:ps | ps <- powerset xs] ++ powerset xs
     
@@ -534,8 +532,8 @@ diverges :: [Expr] -> Bool
 diverges terms = all diverges' orderings'
   where
    syms'       = S.unions (map opSyms terms)
-   orderings'  = orderings $ trace ((show (S.size syms') ++ " unique syms")) syms'
-   diverges' o = trace ("Divergence check for " ++ show o) $ divergesFor o terms
+   orderings'  = orderings syms'
+   diverges' o = divergesFor o terms
    
 divergesFor :: OpOrdering -> [Expr] -> Bool
 divergesFor o trms = any diverges' (L.subsequences trms)
@@ -545,23 +543,29 @@ divergesFor o trms = any diverges' (L.subsequences trms)
       any ascending (scp o trms') && all (not . descending) (scp o trms')
       
 descending :: SCPath -> Bool
-descending (a, b, ds) = L.elem SCDown ds && L.notElem SCUp ds
+descending (_, _, ds) = L.elem SCDown ds && L.notElem SCUp ds
 
 ascending :: SCPath -> Bool
 ascending  (a, b, ds) = a == b && L.elem SCUp ds
 
+type SubExpr = (Expr, Expr -> Expr)
+
+
+
+
 getRewrites :: Knowledge -> SymEnv -> [Expr] -> AutoRewrite -> IO [Expr]
-getRewrites γ symEnv path ar =
-  Mb.maybeToList <$> runMaybeT (getRewrite γ symEnv path ar)
-  
--- getRewrites γ symEnv expr@(EApp lhs rhs) ar = do
---   base   <- runMaybeT (getRewrite γ symEnv expr ar)
---   lhs'   <- getRewrites γ symEnv lhs ar
---   rhs'   <- getRewrites γ symEnv rhs ar
---   return $ Mb.maybeToList base
---     ++ [ EApp l r | l <- lhs:lhs'
---                   , r <- rhs:rhs'
---                   , l /= lhs || r /= rhs]
+getRewrites γ symEnv path ar = case last path of
+  EApp lhs rhs ->
+    do
+      base   <- runMaybeT (getRewrite γ symEnv path ar)
+      lhs'   <- getRewrites γ symEnv [lhs] ar
+      rhs'   <- getRewrites γ symEnv [rhs] ar
+      return $ Mb.maybeToList base
+        ++ [ EApp l r | l <- lhs:lhs'
+                      , r <- rhs:rhs'
+                      , l /= lhs || r /= rhs]
+  _ ->
+    Mb.maybeToList <$> runMaybeT (getRewrite γ symEnv path ar)
 
 
 getRewrite :: Knowledge -> SymEnv -> [Expr] -> AutoRewrite -> MaybeT IO Expr
@@ -575,8 +579,9 @@ getRewrite γ symEnv path (AutoRewrite args lhs rhs) =
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
     checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
-    guard $ not $ diverges $ path ++ [expr']
-    return expr'
+    let dv = if diverges $ path ++ [expr'] then trace "Diverge" True else False
+    guard $ not dv
+    return $ trace ("RW: " ++ (show expr) ++ "-->\n\n" ++ (show expr') ++ "\n\n") expr'
   where
     check :: Expr -> MaybeT IO ()
     check e = do
@@ -603,12 +608,27 @@ getRewrite γ symEnv path (AutoRewrite args lhs rhs) =
 
 
 eval :: Knowledge -> ICtx -> [Expr] -> EvalST Expr
-eval _ ctx path
+eval γ  ctx path
   | Just v <- M.lookup (last path) (icSimpl ctx)
-  = return v
+  = do
+      rws <- getRWs 
+      let evAccum' = S.fromList $ map (path, ) $ filter (/= (last path)) (rws)
+      modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
+      trace ("Simplified " ++ (show $ last path) ++ " to " ++ show v) return v
+    where
+      autorws  =
+        Mb.fromMaybe [] $ do
+          cid <- icSubcId ctx
+          M.lookup cid $ knAutoRWs γ
+
+      getRWs :: EvalST [Expr]
+      getRWs = do
+        env <- gets evEnv
+        concat <$> mapM (liftIO . getRewrites γ env path) autorws
 eval γ ctx path =
   do
-    let e = trace (show $ length path) last path
+    let e = trace ("Eval " ++ (show $ last path)) $ last path
+    -- let e = last path
     rws <- getRWs 
     e'  <- simplify γ ctx <$> go e
     let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
