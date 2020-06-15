@@ -550,38 +550,48 @@ ascending  (a, b, ds) = a == b && L.elem SCUp ds
 
 type SubExpr = (Expr, Expr -> Expr)
 
+subExprs :: Expr -> [SubExpr]
+subExprs ite@(EIte c lhs rhs)  = (ite,id):c'' ++ l'' ++ r''
+  where
+    c' = subExprs c
+    l' = subExprs lhs
+    r' = subExprs rhs
+    c'' = map (\(e, f) -> (e, \e' -> EIte (f e') lhs rhs)) c'
+    l'' = map (\(e, f) -> (e, \e' -> EIte c (f e') rhs)) l'
+    r'' = map (\(e, f) -> (e, \e' -> EIte c lhs (f e'))) r'
+    
+subExprs bin@(EBin op lhs rhs) = (bin,id):lhs'' ++ rhs''
+  where
+    lhs' = subExprs lhs
+    rhs' = subExprs rhs
+    lhs'' :: [SubExpr]
+    lhs'' = map (\(e, f) -> (e, \e' -> EBin op (f e') rhs)) lhs'
+    rhs'' :: [SubExpr]
+    rhs'' = map (\(e, f) -> (e, \e' -> EBin op lhs (f e'))) rhs'
+    
+subExprs app@(EApp lhs rhs) = (app,id):lhs'' ++ rhs''
+  where
+    lhs' = subExprs lhs
+    rhs' = subExprs rhs
+    lhs'' :: [SubExpr]
+    lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
+    rhs'' :: [SubExpr]
+    rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
+subExprs e = [(e, id)]
 
-
-
-getRewrites :: Knowledge -> SymEnv -> [Expr] -> AutoRewrite -> IO [Expr]
-getRewrites γ symEnv path ar = case last path of
-  EApp lhs rhs ->
-    do
-      base   <- runMaybeT (getRewrite γ symEnv path ar)
-      lhs'   <- getRewrites γ symEnv [lhs] ar
-      rhs'   <- getRewrites γ symEnv [rhs] ar
-      return $ Mb.maybeToList base
-        ++ [ EApp l r | l <- lhs:lhs'
-                      , r <- rhs:rhs'
-                      , l /= lhs || r /= rhs]
-  _ ->
-    Mb.maybeToList <$> runMaybeT (getRewrite γ symEnv path ar)
-
-
-getRewrite :: Knowledge -> SymEnv -> [Expr] -> AutoRewrite -> MaybeT IO Expr
-getRewrite γ symEnv path (AutoRewrite args lhs rhs) =
+getRewrites :: Knowledge -> SymEnv -> [Expr] -> SubExpr -> AutoRewrite -> MaybeT IO Expr
+getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
   do
-    let expr = last path
-    su@(Su suMap) <- MaybeT $ return $ unify freeVars lhs expr
-    let expr' = subst su rhs
-    guard $ expr /= expr'
+    su@(Su suMap) <- MaybeT $ return $ unify freeVars lhs subE
+    let subE' = subst su rhs
+    let expr' = toE subE'
+    guard $ expr' `L.notElem` path
     let (argSorts', exprSorts') = sortsToUnify (M.toList suMap)
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
     checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
-    let dv = if diverges $ path ++ [expr'] then trace "Diverge" True else False
-    guard $ not dv
-    return $ trace ("RW: " ++ (show expr) ++ "-->\n\n" ++ (show expr') ++ "\n\n") expr'
+    guard $ not $ diverges $ path ++ [expr']
+    return expr'
   where
     check :: Expr -> MaybeT IO ()
     check e = do
@@ -608,27 +618,14 @@ getRewrite γ symEnv path (AutoRewrite args lhs rhs) =
 
 
 eval :: Knowledge -> ICtx -> [Expr] -> EvalST Expr
-eval γ  ctx path
+eval _ ctx path
   | Just v <- M.lookup (last path) (icSimpl ctx)
-  = do
-      rws <- getRWs 
-      let evAccum' = S.fromList $ map (path, ) $ filter (/= (last path)) (rws)
-      modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
-      trace ("Simplified " ++ (show $ last path) ++ " to " ++ show v) return v
-    where
-      autorws  =
-        Mb.fromMaybe [] $ do
-          cid <- icSubcId ctx
-          M.lookup cid $ knAutoRWs γ
-
-      getRWs :: EvalST [Expr]
-      getRWs = do
-        env <- gets evEnv
-        concat <$> mapM (liftIO . getRewrites γ env path) autorws
+  = return v
+        
 eval γ ctx path =
   do
-    let e = trace ("Eval " ++ (show $ last path)) $ last path
-    -- let e = last path
+    -- let e = trace ("Eval " ++ (show $ last path)) $ last path
+    let e = last path
     rws <- getRWs 
     e'  <- simplify γ ctx <$> go e
     let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
@@ -643,9 +640,12 @@ eval γ ctx path =
         M.lookup cid $ knAutoRWs γ
 
     getRWs :: EvalST [Expr]
-    getRWs = do
+    getRWs = concat <$> mapM getRWs' (subExprs (last path))
+
+    getRWs' :: SubExpr -> EvalST [Expr]
+    getRWs' s = do
       env <- gets evEnv
-      concat <$> mapM (liftIO . getRewrites γ env path) autorws
+      Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrites γ env path s) autorws
 
     addConst (e,e') ctx = if isConstant (knDCs γ) e'
                            then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
