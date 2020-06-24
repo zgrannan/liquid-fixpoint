@@ -44,7 +44,7 @@ import qualified Data.Maybe           as Mb
 import           Debug.Trace          (trace)
 
 mytracepp :: (PPrint a) => String -> a -> a
-mytracepp = notracepp
+mytracepp = tracepp
 
 --------------------------------------------------------------------------------
 -- | Strengthen Constraint Environments via PLE 
@@ -265,7 +265,7 @@ updCtx InstEnv {..} ctx delta cidMb
                     , icCands  = S.fromList cands           <> icCands  ctx
                     , icEquals = fromPairs initEqs          <> icEquals ctx
                     , icSimpl  = M.fromList (S.toList sims) <> icSimpl ctx <> econsts
-                    , icSubcId = cidMb
+                    , icSubcId = cidMb 
                     }
   where         
     initEqs   = S.fromList $ concat [rewrite e rw | e  <- (cands ++ (snd <$> S.toList (icEquals ctx)))
@@ -569,6 +569,15 @@ subExprs bin@(EBin op lhs rhs) = (bin,id):lhs'' ++ rhs''
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> EBin op lhs (f e'))) rhs'
     
+subExprs app@(EApp lhs rhs) = (app,id):lhs'' ++ rhs''
+  where
+    lhs' = subExprs lhs
+    rhs' = subExprs rhs
+    lhs'' :: [SubExpr]
+    lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
+    rhs'' :: [SubExpr]
+    rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
+    
 subExprs e = [(e, id)]
 
 getRewrites :: Knowledge -> SymEnv -> [Expr] -> SubExpr -> AutoRewrite -> MaybeT IO Expr
@@ -608,31 +617,51 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
 
     env = mkSearchEnv (seSort symEnv)
 
+subsFromAssm :: Expr -> [(Symbol, Expr)]
+subsFromAssm (PAnd es)                                   = concatMap subsFromAssm es
+subsFromAssm (EEq lhs rhs) | (EVar v) <- unElab lhs = [(v, unElab rhs)]
+subsFromAssm _                                           = []
 
 eval :: Knowledge -> ICtx -> [Expr] -> EvalST Expr
 eval _ ctx path
   | Just v <- M.lookup (last path) (icSimpl ctx)
-  = return v
+  = trace (show (last path) ++ " was " ++ show v) return v
         
 eval γ ctx path =
   do
-    -- let e = trace ("Eval " ++ (show $ last path)) $ last path
     let e = last path
     rws <- getRWs 
     e'  <- simplify γ ctx <$> go e
     let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
     modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
     if e /= e'
-      then eval γ (addConst (e,e') ctx) (path ++ [e'])
+      then do
+        result <- eval γ (addConst (e,e') ctx) (path ++ [e'])
+        return result
+        -- trace (show e ++ " evaled to! " ++ show result) (return result)
       else return e
   where
+    -- autorws = L.nub $ concat $ M.elems (knAutoRWs γ)
     autorws  =
       Mb.fromMaybe [] $ do
         cid <- icSubcId ctx
         M.lookup cid $ knAutoRWs γ
 
     getRWs :: EvalST [Expr]
-    getRWs = concat <$> mapM getRWs' (subExprs (last path))
+    getRWs =
+      let
+        e  = last path
+        ints = concatMap subsFromAssm (S.toList $ icAssms ctx)
+        -- su = trace ("!!!!!!" ++ show e ++ "!!!!!" ++ show ints) $ Su (M.fromList ints)
+        su = Su (M.fromList ints)
+        e' = subst' e
+        subst' ee =
+          let ee' = subst su ee
+          in if ee == ee' then ee else subst' ee'
+      in
+        do
+          rws <- concat <$> mapM getRWs' (subExprs e')
+          trace ("*****" ++ show e ++ "=======" ++ show e' ++ "------" ++ show (length rws) ++ "." ++ show autorws) $ return rws
 
     getRWs' :: SubExpr -> EvalST [Expr]
     getRWs' s = do
@@ -865,7 +894,7 @@ class Simplifiable a where
 
 
 instance Simplifiable Expr where 
-  simplify γ ictx e = mytracepp ("simplification of " ++ showpp e) $ fix (Vis.mapExpr tx) e
+  simplify γ ictx e = fix (Vis.mapExpr tx) e
     where 
       fix f e = if e == e' then e else fix f e' where e' = f e 
       tx e 
