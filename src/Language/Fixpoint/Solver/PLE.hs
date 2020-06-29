@@ -44,7 +44,7 @@ import qualified Data.Maybe           as Mb
 import           Debug.Trace          (trace)
 
 mytracepp :: (PPrint a) => String -> a -> a
-mytracepp = tracepp
+mytracepp = notracepp
 
 --------------------------------------------------------------------------------
 -- | Strengthen Constraint Environments via PLE 
@@ -67,7 +67,7 @@ instantiate cfg fi' = do
 ------------------------------------------------------------------------------- 
 -- | Step 1a: @instEnv@ sets up the incremental-PLE environment 
 instEnv :: (Loc a) => Config -> SInfo a -> [(SubcId, SimpC a)] -> SMT.Context -> InstEnv a 
-instEnv cfg fi cs ctx = InstEnv cfg ctx bEnv aEnv (M.fromList cs) γ s0
+instEnv cfg fi cs ctx = InstEnv cfg ctx bEnv aEnv cs γ s0
   where 
     bEnv              = bs fi
     aEnv              = ae fi
@@ -197,7 +197,7 @@ data InstEnv a = InstEnv
   , ieSMT   :: !SMT.Context
   , ieBEnv  :: !BindEnv
   , ieAenv  :: !AxiomEnv 
-  , ieCstrs :: !(M.HashMap SubcId (SimpC a))
+  , ieCstrs :: ![(SubcId, SimpC a)]
   , ieKnowl :: !Knowledge
   , ieEvEnv :: !EvalEnv
   } 
@@ -265,7 +265,8 @@ updCtx InstEnv {..} ctx delta cidMb
                     , icCands  = S.fromList cands           <> icCands  ctx
                     , icEquals = fromPairs initEqs          <> icEquals ctx
                     , icSimpl  = M.fromList (S.toList sims) <> icSimpl ctx <> econsts
-                    , icSubcId = cidMb 
+                    , icSubcId = fst <$> L.find (\(a, b) -> (head delta) `memberIBindEnv` (_cenv b)) ieCstrs
+                        -- trace (show (map (\(a,b) -> (a, _cenv b)) ieCstrs) ++ "----" ++ show delta ++ "-----" ++ (show cidMb)) cidMb 
                     }
   where         
     initEqs   = S.fromList $ concat [rewrite e rw | e  <- (cands ++ (snd <$> S.toList (icEquals ctx)))
@@ -283,7 +284,7 @@ updCtx InstEnv {..} ctx delta cidMb
     (rhs:es)  = unElab <$> (eRhs : (expr <$> binds))
     eRhs      = maybe PTrue crhs subMb
     binds     = [ lookupBindEnv i ieBEnv | i <- delta ] 
-    subMb     = getCstr ieCstrs <$> cidMb
+    subMb     = getCstr (M.fromList ieCstrs) <$> cidMb
 
 
 findConstants :: Knowledge -> [Expr] -> [(Expr, Expr)]
@@ -569,14 +570,14 @@ subExprs bin@(EBin op lhs rhs) = (bin,id):lhs'' ++ rhs''
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> EBin op lhs (f e'))) rhs'
     
-subExprs app@(EApp lhs rhs) = (app,id):lhs'' ++ rhs''
-  where
-    lhs' = subExprs lhs
-    rhs' = subExprs rhs
-    lhs'' :: [SubExpr]
-    lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
-    rhs'' :: [SubExpr]
-    rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
+-- subExprs app@(EApp lhs rhs) = (app,id):lhs'' ++ rhs''
+--   where
+--     lhs' = subExprs lhs
+--     rhs' = subExprs rhs
+--     lhs'' :: [SubExpr]
+--     lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
+--     rhs'' :: [SubExpr]
+--     rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
     
 subExprs e = [(e, id)]
 
@@ -592,6 +593,10 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
     checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
     guard $ not $ diverges $ path ++ [expr']
+    -- guard $
+    --   if diverges $ path ++ [expr']
+    --   then trace "RW would diverge" False
+    --   else True
     return expr'
   where
     check :: Expr -> MaybeT IO ()
@@ -619,13 +624,14 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
 
 subsFromAssm :: Expr -> [(Symbol, Expr)]
 subsFromAssm (PAnd es)                                   = concatMap subsFromAssm es
-subsFromAssm (EEq lhs rhs) | (EVar v) <- unElab lhs = [(v, unElab rhs)]
+subsFromAssm (EEq lhs rhs) | (EVar v) <- unElab lhs
+                           , anfPrefix `isPrefixOfSym` v = [(v, unElab rhs)]
 subsFromAssm _                                           = []
 
 eval :: Knowledge -> ICtx -> [Expr] -> EvalST Expr
 eval _ ctx path
   | Just v <- M.lookup (last path) (icSimpl ctx)
-  = trace (show (last path) ++ " was " ++ show v) return v
+  = return v
         
 eval γ ctx path =
   do
@@ -661,7 +667,7 @@ eval γ ctx path =
       in
         do
           rws <- concat <$> mapM getRWs' (subExprs e')
-          trace ("*****" ++ show e ++ "=======" ++ show e' ++ "------" ++ show (length rws) ++ "." ++ show autorws) $ return rws
+          return rws
 
     getRWs' :: SubExpr -> EvalST [Expr]
     getRWs' s = do
