@@ -8,7 +8,7 @@
 --     2. "Reasoning about Functions", VMCAI 2018, https://ranjitjhala.github.io/static/reasoning-about-functions.pdf 
 --------------------------------------------------------------------------------
 
-{-# LANGUAGE DeriveGeneric         #-}
+{-# LANGUAGE DeriveGeneric             #-}
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE PartialTypeSignatures     #-}
 {-# LANGUAGE TupleSections             #-}
@@ -32,9 +32,11 @@ import           Language.Fixpoint.Utils.Progress
 import           Language.Fixpoint.SortCheck
 import           Language.Fixpoint.Graph.Deps             (isTarget) 
 import           Language.Fixpoint.Solver.Sanitize        (symbolEnv)
+import           Language.Fixpoint.Solver.Rewrite
 import           Control.Monad.State
 import           Control.Monad.Trans.Maybe
 import           Data.Hashable
+import qualified Data.Text as TX
 import           GHC.Generics
 import           Data.Generics()
 import qualified Data.HashMap.Strict  as M
@@ -422,133 +424,6 @@ unify freeVars template seenExpr = case (template, seenExpr) of
     unify freeVars rw seen
   _ -> Nothing
 
-type Op = Symbol
-type OpOrdering = [Symbol]
-type Term = Expr
-
-data SCDir =
-    SCUp
-  | SCEq 
-  | SCDown
-  deriving (Eq, Ord, Show, Generic)
-
-instance Hashable SCDir
-
-type SCPath = ((Op, Int), (Op, Int), [SCDir])
-
-data SCEntry = SCEntry {
-    from :: (Op, Int)
-  , to   :: (Op, Int)
-  , dir  :: SCDir
-} deriving (Eq, Ord, Show, Generic)
-
-instance Hashable SCEntry
-
-getDir :: OpOrdering -> Term -> Term -> SCDir
-getDir _ (EVar _) (EVar _) = SCEq
-getDir o from to =
-  case (synGTE o from to, synGTE o to from) of
-      (True, True)  -> SCEq
-      (True, False) -> SCDown
-      (False, _)    -> SCUp
-
-getSC :: OpOrdering -> Term -> Term -> S.HashSet SCEntry
-getSC o l r = case (splitEApp l, splitEApp r) of
-  ((EVar op, ts), (EVar op', us)) ->
-    S.fromList $ do
-      (i, from) <- zip [0..] ts
-      (j, to)   <- zip [0..] us
-      return $ SCEntry (op, i) (op', j) (getDir o from to)
-  _ -> S.empty
-
-scp :: OpOrdering -> [Expr] -> S.HashSet SCPath
-scp _ []       = S.empty
-scp _ [_]      = S.empty
-scp o [t1, t2] = S.fromList $ do
-  (SCEntry a b d) <- S.toList $ getSC o t1 t2
-  return (a, b, [d])
-scp o (t1:t2:trms) = S.fromList $ do
-  (SCEntry a b' d) <- S.toList $ getSC o t1 t2
-  (a', b, ds)      <- S.toList $ scp o (t2:trms)
-  guard $ b' == a'
-  return (a, b, d:ds)
-
-synEQ :: OpOrdering -> Expr -> Expr -> Bool
-synEQ o l r = synGTE o l r && synGTE o r l
-
-opGT :: OpOrdering -> Op -> Op -> Bool
-opGT ordering op1 op2 = case (L.elemIndex op1 ordering, L.elemIndex op2 ordering)  of
-  (Just index1, Just index2) -> index1 > index2
-  _ -> False
-
-removeSynEQs :: OpOrdering -> [Expr] -> [Expr] -> ([Expr], [Expr])
-removeSynEQs _ [] ys      = ([], ys)
-removeSynEQs ordering (x:xs) ys
-  | Just yIndex <- L.findIndex (synEQ ordering x) ys
-  = removeSynEQs ordering xs $ take yIndex ys ++ drop (yIndex + 1) ys
-  | otherwise =
-    let
-      (xs', ys') = removeSynEQs ordering xs ys
-    in
-      (x:xs', ys')
-
-synGTEM :: OpOrdering -> [Expr] -> [Expr] -> Bool
-synGTEM ordering xs ys =     
-  case removeSynEQs ordering xs ys of
-    (_   , []) -> True
-    (xs', ys') -> any (\x -> all (synGT ordering x) ys') xs'
-    
-synGT :: OpOrdering -> Term -> Term -> Bool
-synGT o t1 t2 = synGTE o t1 t2 && not (synGTE o t2 t1)
-    
-synGTE :: OpOrdering -> Expr -> Expr -> Bool
-synGTE _        (EVar _)   (EVar _)   = True
-synGTE _        (EVar _)   (EApp _ _) = False
-synGTE _        (EApp _ _) (EVar _)   = True
-synGTE ordering t1 t2 = case (splitEApp t1, splitEApp t2) of
-  ((EVar x, tms), (EVar y, tms')) ->
-    if opGT ordering x y then
-      synGTEM ordering [t1] tms'
-    else if opGT ordering y x then
-      synGTEM ordering tms [t2]
-    else
-      synGTEM ordering tms tms'
-  _ -> False
-
-
-powerset :: [a] -> [[a]]
-powerset [] = [[]]
-powerset (x:xs) = [x:ps | ps <- powerset xs] ++ powerset xs
-    
-orderings :: S.HashSet Op -> S.HashSet OpOrdering
-orderings ops = S.fromList $ do
-  ops' <- powerset (S.toList ops)
-  L.permutations ops'
-
-opSyms :: Expr -> S.HashSet Symbol
-opSyms (EApp (EVar op) ts) = S.insert op (opSyms ts)
-opSyms _ = S.empty
-
-diverges :: [Expr] -> Bool
-diverges terms = all diverges' orderings'
-  where
-   syms'       = S.unions (map opSyms terms)
-   orderings'  = orderings syms'
-   diverges' o = divergesFor o terms
-   
-divergesFor :: OpOrdering -> [Expr] -> Bool
-divergesFor o trms = any diverges' (L.subsequences trms)
-  where
-    diverges' :: [Expr] -> Bool
-    diverges' trms' =
-      any ascending (scp o trms') && all (not . descending) (scp o trms')
-      
-descending :: SCPath -> Bool
-descending (_, _, ds) = L.elem SCDown ds && L.notElem SCUp ds
-
-ascending :: SCPath -> Bool
-ascending  (a, b, ds) = a == b && L.elem SCUp ds
-
 type SubExpr = (Expr, Expr -> Expr)
 
 subExprs :: Expr -> [SubExpr]
@@ -570,16 +445,20 @@ subExprs bin@(EBin op lhs rhs) = (bin,id):lhs'' ++ rhs''
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> EBin op lhs (f e'))) rhs'
     
--- subExprs app@(EApp lhs rhs) = (app,id):lhs'' ++ rhs''
---   where
---     lhs' = subExprs lhs
---     rhs' = subExprs rhs
---     lhs'' :: [SubExpr]
---     lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
---     rhs'' :: [SubExpr]
---     rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
+subExprs app@(EApp lhs rhs) = (app,id):lhs'' ++ rhs''
+  where
+    lhs' = subExprs lhs
+    rhs' = subExprs rhs
+    lhs'' :: [SubExpr]
+    lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
+    rhs'' :: [SubExpr]
+    rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
     
 subExprs e = [(e, id)]
+
+pathStr es = L.intercalate " ->\n" $ map show es
+
+dcPrefix = "lqdc"
 
 getRewrites :: Knowledge -> SymEnv -> [Expr] -> SubExpr -> AutoRewrite -> MaybeT IO Expr
 getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
@@ -592,13 +471,26 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
     checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
-    guard $ not $ diverges $ path ++ [expr']
-    -- guard $
-    --   if diverges $ path ++ [expr']
-    --   then trace "RW would diverge" False
-    --   else True
+    let path' = map convert (path ++ [expr'])
+    -- guard $ not $ diverges $ path ++ [expr']
+    guard $
+      if trace ("Checking divergence for " ++ pathStr path') $ diverges path'
+      then trace ("RW " ++ pathStr path' ++ " would diverge") False
+      else True
     return expr'
   where
+    
+    convert (EIte i t e) = Term "$ite" $ map convert [i,t,e]
+    convert (EApp (EVar s) (EVar var))
+      | dcPrefix `isPrefixOfSym` s
+      = Term (symbol $ TX.concat [symbolText s, "$", symbolText var]) []
+     
+    convert e@(EApp l r) | (EVar fName, terms) <- splitEApp e
+                         = Term fName $ map convert terms
+    convert (EVar s)     = Term s []                  
+    convert e            = error (show e)
+    
+    
     check :: Expr -> MaybeT IO ()
     check e = do
       valid <- MaybeT $ Just <$> isValid γ e
@@ -637,7 +529,7 @@ eval γ ctx path =
   do
     let e = last path
     rws <- getRWs 
-    e'  <- simplify γ ctx <$> go e
+    e'  <- simplify γ ctx <$> evalStep γ ctx e
     let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
     modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
     if e /= e'
@@ -676,27 +568,40 @@ eval γ ctx path =
 
     addConst (e,e') ctx = if isConstant (knDCs γ) e'
                            then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
-    go (ELam (x,s) e)   = ELam (x, s) <$> eval γ' ctx [e] where γ' = γ { knLams = (x, s) : knLams γ }
-    go e@(EIte b e1 e2) = evalIte γ ctx e b e1 e2
-    go (ECoerc s t e)   = ECoerc s t  <$> go e
-    go e@(EApp _ _)     = case splitEApp e of 
-                           (f, es) -> do (f':es') <- mapM (eval γ ctx . return) (f:es) 
-                                         evalApp γ (eApps f' es) (f',es')
-    go e@(PAtom r e1 e2) = fromMaybeM (PAtom r <$> go e1 <*> go e2) (evalBool γ e)
-    go (ENeg e)         = do e'  <- eval γ ctx [e]
-                             return $ ENeg e'
-    go (EBin o e1 e2)   = do e1' <- eval γ ctx [e1]
-                             e2' <- eval γ ctx [e2]
-                             return $ EBin o e1' e2'
-    go (ETApp e t)      = flip ETApp t <$> go e
-    go (ETAbs e s)      = flip ETAbs s <$> go e
-    go e@(PNot e')      = fromMaybeM (PNot <$> go e')           (evalBool γ e)
-    go e@(PImp e1 e2)   = fromMaybeM (PImp <$> go e1 <*> go e2) (evalBool γ e)
-    go e@(PIff e1 e2)   = fromMaybeM (PIff <$> go e1 <*> go e2) (evalBool γ e)
-    go e@(PAnd es)      = fromMaybeM (PAnd <$> (go  <$$> es))   (evalBool γ e)
-    go e@(POr es)       = fromMaybeM (POr  <$> (go <$$> es))    (evalBool γ e)
-    go e                = return e
 
+
+evalStep :: Knowledge -> ICtx -> Expr -> EvalST Expr
+evalStep γ ctx (ELam (x,s) e)   = ELam (x, s) <$> evalStep γ' ctx e where γ' = γ { knLams = (x, s) : knLams γ }
+evalStep γ ctx e@(EIte b e1 e2) = evalIte γ ctx e b e1 e2
+evalStep γ ctx (ECoerc s t e)   = ECoerc s t <$> evalStep γ ctx e
+evalStep γ ctx e@(EApp _ _)     = case splitEApp e of 
+  (f, es) ->
+    do
+      f' <- evalStep γ ctx f
+      if f' /= f
+        then return (eApps f' es)
+        else
+          do
+            es' <- mapM (evalStep γ ctx) es
+            if es /= es'
+              then return (eApps f' es')
+              else evalApp γ (eApps f' es') (f',es')
+evalStep γ ctx e@(PAtom r e1 e2) =
+  fromMaybeM (PAtom r <$> evalStep γ ctx e1 <*> evalStep γ ctx e2) (evalBool γ e)
+evalStep γ ctx (ENeg e) = ENeg <$> evalStep γ ctx e
+evalStep γ ctx (EBin o e1 e2)   = do
+  e1' <- evalStep γ ctx e1
+  if e1' /= e1
+    then return (EBin o e1' e2)
+    else EBin o e1 <$> evalStep γ ctx e2
+evalStep γ ctx (ETApp e t)      = flip ETApp t <$> evalStep γ ctx e
+evalStep γ ctx (ETAbs e s)      = flip ETAbs s <$> evalStep γ ctx e
+evalStep γ ctx e@(PNot e')      = fromMaybeM (PNot <$> evalStep γ ctx e') (evalBool γ e)
+evalStep γ ctx e@(PImp e1 e2)   = fromMaybeM (PImp <$> evalStep γ ctx e1 <*> evalStep γ ctx e2) (evalBool γ e)
+evalStep γ ctx e@(PIff e1 e2)   = fromMaybeM (PIff <$> evalStep γ ctx e1 <*> evalStep γ ctx e2) (evalBool γ e)
+evalStep γ ctx e@(PAnd es)      = fromMaybeM (PAnd <$> (evalStep γ ctx <$$> es)) (evalBool γ e)
+evalStep γ ctx e@(POr es)       = fromMaybeM (POr  <$> (evalStep γ ctx <$$> es)) (evalBool γ e)
+evalStep γ ctx e                = return e
 
 fromMaybeM :: (Monad m) => m a -> m (Maybe a) -> m a 
 fromMaybeM a ma = do 
@@ -779,14 +684,17 @@ evalBool γ e = do
 
 evalIte :: Knowledge -> ICtx -> Expr -> Expr -> Expr -> Expr -> EvalST Expr
 evalIte γ ctx _ b0 e1 e2 = do 
-  b <- eval γ ctx [b0]
-  b'  <- liftIO $ (mytracepp ("evalEIt POS " ++ showpp b) <$> isValid γ b)
-  nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid γ (PNot b))
-  if b' 
-    then return $ e1 
-    else if nb' then return $ e2 
-    else return $ EIte b e1 e2  
-
+  b   <- evalStep γ ctx b0
+  if b /= b0 then return (EIte b e1 e2) else
+    do
+      b'  <- liftIO $ isValid γ b
+      nb' <- liftIO $ isValid γ (PNot b)
+      return $
+        if b'
+        then e1
+        else if nb' then e2 
+        else EIte b e1 e2
+        
 --------------------------------------------------------------------------------
 -- | Knowledge (SMT Interaction)
 --------------------------------------------------------------------------------
