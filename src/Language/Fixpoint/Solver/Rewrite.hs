@@ -68,7 +68,8 @@ synEQ o l r = synGTE o l r && synGTE o r l
 
 opGT :: OpOrdering -> Op -> Op -> Bool
 opGT ordering op1 op2 = case (L.elemIndex op1 ordering, L.elemIndex op2 ordering)  of
-  (Just index1, Just index2) -> index1 > index2
+  (Just index1, Just index2) -> index1 < index2
+  (Just index1, Nothing)     -> True
   _ -> False
 
 removeSynEQs :: OpOrdering -> [Term] -> [Term] -> ([Term], [Term])
@@ -91,31 +92,42 @@ synGTEM ordering xs ys =
 synGT :: OpOrdering -> Term -> Term -> Bool
 synGT o t1 t2 = synGTE o t1 t2 && not (synGTE o t2 t1)
 
+synGTM :: OpOrdering -> [Term] -> [Term] -> Bool
+synGTM o t1 t2 = synGTEM o t1 t2 && not (synGTEM o t2 t1)
+
 synGTE :: OpOrdering -> Term -> Term -> Bool
 synGTE ordering t1@(Term x tms) t2@(Term y tms') =
   if opGT ordering x y then
-    synGTEM ordering [t1] tms'
+    synGTM ordering [t1] tms'
   else if opGT ordering y x then
-    synGTEM ordering tms [t2]
+    synGTM ordering tms [t2]
   else
     synGTEM ordering tms tms'
 
 powerset :: [a] -> [[a]]
 powerset [] = [[]]
 powerset (x:xs) = [x:ps | ps <- powerset xs] ++ powerset xs
-    
-orderings :: S.HashSet Op -> [OpOrdering]
-orderings ops = L.sortOn length $ do
-  ops' <- powerset (S.toList ops)
-  L.permutations ops'
+
+subsequencesOfSize :: Int -> [a] -> [[a]]
+subsequencesOfSize n xs = let l = length xs
+                          in if n>l then [] else subsequencesBySize xs !! (l-n)
+ where
+   subsequencesBySize [] = [[[]]]
+   subsequencesBySize (x:xs) = let next = subsequencesBySize xs
+                             in zipWith (++) ([]:next) (map (map (x:)) next ++ [[]])
+
+maxOrderingConstraints = 2
 
 diverges :: [Term] -> Bool
-diverges terms = all diverges'' (trace (show (length orderings') ++ " orderings of " ++ (show $ length syms') ++ " syms") orderings')
+diverges terms = go 1 
   where
+   go n | n >= length syms' || n > maxOrderingConstraints = True
+   go n | all diverges' (orderings' n) = go (n + 1)
+   go _                                = False
    ops (Term o xs) = o:concatMap ops xs
-   syms'       = S.fromList (concatMap ops terms)
-   orderings'  = zip [1..] $ orderings syms'
-   diverges' o = if divergesFor o terms then True else trace (show o ++ " does not diverge") False
+   syms'           = L.nub $ concatMap ops terms
+   orderings' n    = concatMap L.permutations $ (subsequencesOfSize n) syms'
+   diverges' o     = if divergesFor o terms then True else trace (show o ++ " does not diverge") False
    diverges'' (n,s) | n `mod` 1000 == 0 = trace (show n) $ diverges' s
    diverges'' (n,s) = diverges' s
 
@@ -131,3 +143,25 @@ descending (a, b, ds) = a == b && L.elem SCDown ds && L.notElem SCUp ds
 
 ascending :: SCPath -> Bool
 ascending  (a, b, ds) = a == b && L.elem SCUp ds
+
+mkTerm s ts = Term (symbol s) ts
+
+rev term = mkTerm "reverse" [term]
+x = mkTerm "x" []
+isNil term = mkTerm "isNil" [term]
+headx = mkTerm "headx" []
+tailx = mkTerm "tailx" []
+cons h t = mkTerm "cons" [h, t]
+concat' xs ys = mkTerm "concat" [xs, ys]
+ite x y z = mkTerm "ite" [x,y,z]
+nil = mkTerm "[]" []
+
+f x = mkTerm "f" [x]
+g x = mkTerm "g" [x]
+s x = mkTerm "S" [x]
+
+
+example =
+  [ g $ x
+  , g $ s $ x
+  ]

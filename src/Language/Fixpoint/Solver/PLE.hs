@@ -486,9 +486,12 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
       = Term (symbol $ TX.concat [symbolText s, "$", symbolText var]) []
      
     convert e@(EApp l r) | (EVar fName, terms) <- splitEApp e
-                         = Term fName $ map convert terms
-    convert (EVar s)     = Term s []                  
-    convert e            = error (show e)
+                          = Term fName $ map convert terms
+    convert (EVar s)      = Term s []                  
+    convert (PAnd es)     = Term "$and" $ map convert es
+    convert (PAtom s l r) = Term (symbol $ "$" ++ show s) [convert l, convert r]
+    convert (ECon c)      = Term (symbol $ "ECon$" ++ show c) []
+    convert e             = error (show e)
     
     
     check :: Expr -> MaybeT IO ()
