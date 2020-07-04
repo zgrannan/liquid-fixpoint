@@ -148,7 +148,7 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
     go ictx | S.null (icCands ictx) = return ictx 
     go ictx =  do let cands = icCands ictx
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
-                  evalResults   <- SMT.smtBracket ctx "PLE.evaluate" $ do
+                  evalResults   <- trace "evalCandsLoop" $ SMT.smtBracket ctx "PLE.evaluate" $ do
                                SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx)) 
                                mapM (evalOne γ env' ictx) (S.toList cands)
                   let us = mconcat evalResults 
@@ -428,7 +428,9 @@ unify freeVars template seenExpr = case (template, seenExpr) of
 type SubExpr = (Expr, Expr -> Expr)
 
 subExprs :: Expr -> [SubExpr]
-subExprs ite@(EIte c lhs rhs)  = (ite,id):c'' ++ l'' ++ r''
+subExprs e = (e,id):subExprs' e
+
+subExprs' (EIte c lhs rhs)  = c'' ++ l'' ++ r''
   where
     c' = subExprs c
     l' = subExprs lhs
@@ -437,7 +439,7 @@ subExprs ite@(EIte c lhs rhs)  = (ite,id):c'' ++ l'' ++ r''
     l'' = map (\(e, f) -> (e, \e' -> EIte c (f e') rhs)) l'
     r'' = map (\(e, f) -> (e, \e' -> EIte c lhs (f e'))) r'
     
-subExprs bin@(EBin op lhs rhs) = (bin,id):lhs'' ++ rhs''
+subExprs' (EBin op lhs rhs) = lhs'' ++ rhs''
   where
     lhs' = subExprs lhs
     rhs' = subExprs rhs
@@ -445,17 +447,20 @@ subExprs bin@(EBin op lhs rhs) = (bin,id):lhs'' ++ rhs''
     lhs'' = map (\(e, f) -> (e, \e' -> EBin op (f e') rhs)) lhs'
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> EBin op lhs (f e'))) rhs'
-    
-subExprs app@(EApp lhs rhs) = (app,id):lhs'' ++ rhs''
+
+subExprs' e@(EApp{}) = concatMap replace indexedArgs
   where
-    lhs' = subExprs lhs
-    rhs' = subExprs rhs
-    lhs'' :: [SubExpr]
-    lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
-    rhs'' :: [SubExpr]
-    rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
-    
-subExprs e = [(e, id)]
+    (f, es)          = splitEApp e
+    indexedArgs      = zip [0..] es
+    replace (i, arg) = do
+      (subArg, toArg) <- subExprs arg
+      return (subArg, \subArg' -> eApps f $ (take i es) ++ (toArg subArg'):(drop (i+1) es))
+      
+subExprs' (PAnd []) = []
+subExprs' (POr  []) = []
+subExprs' (EVar _)  = []
+subExprs' (ECon _)  = []
+subExprs' e = error $ show e
 
 pathStr es = L.intercalate " ->\n" $ map show es
 
@@ -478,7 +483,7 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
         return (expr', RW opOrdering)
       Diverges ->
         mzero
-        -- trace (pathStr (map fst termPath ++ [convert expr']) ++ " would diverge") mzero
+        --trace (pathStr (map fst termPath ++ [convert expr']) ++ " would diverge") mzero
     -- guard $ not $ diverges $ path ++ [expr']
     -- guard $
     --   if trace ("Checking divergence for " ++ pathStr path') $ diverges path'
@@ -505,12 +510,13 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
     check :: Expr -> MaybeT IO ()
     check e = do
       valid <- MaybeT $ Just <$> isValid γ e
-      guard valid
+      if not valid then trace "reft issue" mzero else return ()
+      -- guard valid
 
     checkSorts argSorts exprSorts =
       case runCM0 dummySpan $ unifys env Nothing argSorts exprSorts of
         Right  _ -> return ()
-        Left   _ -> mzero
+        Left   _ -> trace "sort issue" mzero
 
     sortsToUnify substList = unzip $ do
       (sym, e) <- substList
