@@ -148,7 +148,7 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
     go ictx | S.null (icCands ictx) = return ictx 
     go ictx =  do let cands = icCands ictx
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
-                  evalResults   <- trace "evalCandsLoop" $ SMT.smtBracket ctx "PLE.evaluate" $ do
+                  evalResults   <- SMT.smtBracket ctx "PLE.evaluate" $ do
                                SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx)) 
                                mapM (evalOne γ env' ictx) (S.toList cands)
                   let us = mconcat evalResults 
@@ -510,13 +510,13 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
     check :: Expr -> MaybeT IO ()
     check e = do
       valid <- MaybeT $ Just <$> isValid γ e
-      if not valid then trace "reft issue" mzero else return ()
-      -- guard valid
+      -- if not valid then trace "reft issue" mzero else return ()
+      guard valid
 
     checkSorts argSorts exprSorts =
       case runCM0 dummySpan $ unifys env Nothing argSorts exprSorts of
         Right  _ -> return ()
-        Left   _ -> trace "sort issue" mzero
+        Left   _ -> mzero -- trace "sort issue" mzero
 
     sortsToUnify substList = unzip $ do
       (sym, e) <- substList
