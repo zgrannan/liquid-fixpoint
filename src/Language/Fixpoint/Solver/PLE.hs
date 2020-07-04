@@ -343,8 +343,9 @@ type EvalST a = StateT EvalEnv IO a
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO (S.HashSet ([Expr], Expr))
 evalOne γ env ctx e = do
-  (e',st) <- runStateT (eval γ ctx [e]) env 
-  return $ if e' == e then evAccum st else S.insert ([e], e') (evAccum st)
+  (e',st) <- runStateT (eval γ ctx [(e, PLE)]) env
+  return $ evAccum st
+  -- return $ if e' == e then evAccum st else S.insert ([e], e') (evAccum st)
 
 notGuardedApps :: Expr -> [Expr]
 notGuardedApps = go 
@@ -460,24 +461,30 @@ pathStr es = L.intercalate " ->\n" $ map show es
 
 dcPrefix = "lqdc"
 
-getRewrites :: Knowledge -> SymEnv -> [Expr] -> SubExpr -> AutoRewrite -> MaybeT IO Expr
+getRewrites :: Knowledge -> SymEnv -> [(Expr, TermOrigin)] -> SubExpr -> AutoRewrite -> MaybeT IO (Expr, TermOrigin)
 getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
   do
     su@(Su suMap) <- MaybeT $ return $ unify freeVars lhs subE
     let subE' = subst su rhs
     let expr' = toE subE'
-    guard $ expr' `L.notElem` path
+    guard $ all ( (/= expr') . fst) path
     let (argSorts', exprSorts') = sortsToUnify (M.toList suMap)
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
     checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
-    let path' = map convert (path ++ [expr'])
+    let termPath = map (\(t,o) -> (convert t, o)) path
+    case diverges termPath (convert expr') of
+      QuasiTerminates opOrdering  ->
+        return (expr', RW opOrdering)
+      Diverges ->
+        mzero
+        -- trace (pathStr (map fst termPath ++ [convert expr']) ++ " would diverge") mzero
     -- guard $ not $ diverges $ path ++ [expr']
-    guard $
-      if trace ("Checking divergence for " ++ pathStr path') $ diverges path'
-      then trace ("RW " ++ pathStr path' ++ " would diverge") False
-      else True
-    return expr'
+    -- guard $
+    --   if trace ("Checking divergence for " ++ pathStr path') $ diverges path'
+    --   then trace ("RW " ++ pathStr path' ++ " would diverge") False
+    --   else True
+    -- return expr'
   where
     
     convert (EIte i t e) = Term "$ite" $ map convert [i,t,e]
@@ -485,12 +492,13 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
       | dcPrefix `isPrefixOfSym` s
       = Term (symbol $ TX.concat [symbolText s, "$", symbolText var]) []
      
-    convert e@(EApp l r) | (EVar fName, terms) <- splitEApp e
+    convert e@(EApp{})    | (EVar fName, terms) <- splitEApp e
                           = Term fName $ map convert terms
     convert (EVar s)      = Term s []                  
-    convert (PAnd es)     = Term "$and" $ map convert es
-    convert (PAtom s l r) = Term (symbol $ "$" ++ show s) [convert l, convert r]
-    convert (ECon c)      = Term (symbol $ "ECon$" ++ show c) []
+    convert (PAnd es)     = Term "and$" $ map convert es
+    convert (PAtom s l r) = Term (symbol $ "atom$" ++ show s) [convert l, convert r]
+    convert (EBin o l r)  = Term (symbol $ "ebin$" ++ show o) [convert l, convert r]
+    convert (ECon c)      = Term (symbol $ "econ$" ++ show c) []
     convert e             = error (show e)
     
     
@@ -523,35 +531,39 @@ subsFromAssm (EEq lhs rhs) | (EVar v) <- unElab lhs
                            , anfPrefix `isPrefixOfSym` v = [(v, unElab rhs)]
 subsFromAssm _                                           = []
 
-eval :: Knowledge -> ICtx -> [Expr] -> EvalST Expr
+eval :: Knowledge -> ICtx -> [(Expr, TermOrigin)] -> EvalST ()
 eval _ ctx path
-  | Just v <- M.lookup (last path) (icSimpl ctx)
-  = return v
+  | pathExprs <- map fst path
+  , e         <- last pathExprs
+  , Just v    <- M.lookup e (icSimpl ctx)
+  = if v /= e
+    then modify (\st -> st { evAccum = S.insert (pathExprs, v) (evAccum st)})
+    else mzero
         
 eval γ ctx path =
   do
-    let e = last path
     rws <- getRWs 
     e'  <- simplify γ ctx <$> evalStep γ ctx e
-    let evAccum' = S.fromList $ map (path, ) $ filter (/= e) (e':rws)
+    let evalIsNewExpr = L.notElem e' pathExprs
+    let exprsToAdd = (if evalIsNewExpr then [e'] else []) ++ map fst rws
+    let evAccum' = S.fromList $ map (pathExprs, ) $ exprsToAdd
     modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
-    if e /= e'
-      then do
-        result <- eval γ (addConst (e,e') ctx) (path ++ [e'])
-        return result
-        -- trace (show e ++ " evaled to! " ++ show result) (return result)
-      else return e
+    if evalIsNewExpr 
+      then eval γ (addConst (e,e') ctx) (path ++ [(e', PLE)])
+      else return ()
+    mapM_ (\rw -> (eval γ ctx) (path ++ [rw])) rws
   where
+    pathExprs = map fst path
+    e         = last pathExprs
     -- autorws = L.nub $ concat $ M.elems (knAutoRWs γ)
     autorws  =
       Mb.fromMaybe [] $ do
         cid <- icSubcId ctx
         M.lookup cid $ knAutoRWs γ
 
-    getRWs :: EvalST [Expr]
+    getRWs :: EvalST [(Expr, TermOrigin)]
     getRWs =
       let
-        e  = last path
         ints = concatMap subsFromAssm (S.toList $ icAssms ctx)
         -- su = trace ("!!!!!!" ++ show e ++ "!!!!!" ++ show ints) $ Su (M.fromList ints)
         su = Su (M.fromList ints)
@@ -564,7 +576,7 @@ eval γ ctx path =
           rws <- concat <$> mapM getRWs' (subExprs e')
           return rws
 
-    getRWs' :: SubExpr -> EvalST [Expr]
+    getRWs' :: SubExpr -> EvalST [(Expr, TermOrigin)]
     getRWs' s = do
       env <- gets evEnv
       Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrites γ env path s) autorws

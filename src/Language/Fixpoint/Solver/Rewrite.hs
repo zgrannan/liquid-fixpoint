@@ -8,6 +8,7 @@ import           GHC.Generics
 import           Data.Hashable
 import qualified Data.HashSet         as S
 import qualified Data.List            as L
+import qualified Data.Maybe           as Mb
 import           Language.Fixpoint.Types hiding (simplify)
 import qualified Data.Text as TX
 
@@ -118,22 +119,41 @@ subsequencesOfSize n xs = let l = length xs
 
 maxOrderingConstraints = 2
 
-diverges :: [Term] -> Bool
-diverges terms = go 1 
-  where
-   go n | n >= length syms' || n > maxOrderingConstraints = True
-   go n | all diverges' (orderings' n) = go (n + 1)
-   go _                                = False
-   ops (Term o xs) = o:concatMap ops xs
-   syms'           = L.nub $ concatMap ops terms
-   orderings' n    = concatMap L.permutations $ (subsequencesOfSize n) syms'
-   diverges' o     = if divergesFor o terms then True else trace (show o ++ " does not diverge") False
-   diverges'' (n,s) | n `mod` 1000 == 0 = trace (show n) $ diverges' s
-   diverges'' (n,s) = diverges' s
+data TermOrigin = PLE | RW OpOrdering
 
-divergesFor :: OpOrdering -> [Term] -> Bool
-divergesFor o trms = any diverges' (L.subsequences trms)
+data DivergeResult = Diverges | QuasiTerminates OpOrdering
+
+getOrdering :: TermOrigin -> Maybe OpOrdering
+getOrdering (RW o) = Just o
+getOrdering PLE    = Nothing
+
+diverges :: [(Term, TermOrigin)] -> Term -> DivergeResult
+diverges path term = go 0 
   where
+   path' = map fst path ++ [term]
+   go n | n >= length syms' || n > maxOrderingConstraints = Diverges
+   go n = case L.find (not . diverges') (orderings' n) of
+     Just ordering -> QuasiTerminates ordering
+     Nothing       -> go (n + 1)
+   ops (Term o xs) = o:concatMap ops xs
+   syms'           = L.nub $ concatMap ops path'
+   suggestedOrderings :: [OpOrdering]
+   suggestedOrderings =
+     reverse $ Mb.catMaybes $ map (getOrdering . snd) path
+   orderings' n    =
+     suggestedOrderings ++ concatMap L.permutations ((subsequencesOfSize n) syms')
+   diverges' o     = divergesFor o path term
+     -- if divergesFor o path term then True else trace (show o ++ " does not diverge") False
+   -- diverges'' (n,s) | n `mod` 1000 == 0 = trace (show n) $ diverges' s
+   -- diverges'' (n,s) = diverges' s
+
+divergesFor :: OpOrdering -> [(Term, TermOrigin)] -> Term -> Bool
+divergesFor o path term = any diverges' terms'
+  where
+    terms = map fst path ++ [term]
+    terms' = case snd (last path) of
+      (RW _) -> L.tails terms
+      _      -> L.subsequences terms
     diverges' :: [Term] -> Bool
     diverges' trms' =
       any ascending (scp o trms') && all (not . descending) (scp o trms')
