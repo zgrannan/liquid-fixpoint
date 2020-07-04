@@ -447,6 +447,15 @@ subExprs' (EBin op lhs rhs) = lhs'' ++ rhs''
     lhs'' = map (\(e, f) -> (e, \e' -> EBin op (f e') rhs)) lhs'
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> EBin op lhs (f e'))) rhs'
+    
+subExprs' (PAtom op lhs rhs) = lhs'' ++ rhs''
+  where
+    lhs' = subExprs lhs
+    rhs' = subExprs rhs
+    lhs'' :: [SubExpr]
+    lhs'' = map (\(e, f) -> (e, \e' -> PAtom op (f e') rhs)) lhs'
+    rhs'' :: [SubExpr]
+    rhs'' = map (\(e, f) -> (e, \e' -> PAtom op lhs (f e'))) rhs'
 
 subExprs' e@(EApp{}) = concatMap replace indexedArgs
   where
@@ -456,13 +465,12 @@ subExprs' e@(EApp{}) = concatMap replace indexedArgs
       (subArg, toArg) <- subExprs arg
       return (subArg, \subArg' -> eApps f $ (take i es) ++ (toArg subArg'):(drop (i+1) es))
       
-subExprs' (PAnd []) = []
-subExprs' (POr  []) = []
-subExprs' (EVar _)  = []
-subExprs' (ECon _)  = []
+subExprs' (PAnd [])   = []
+subExprs' (POr  [])   = []
+subExprs' (EVar _)    = []
+subExprs' (ECon _)    = []
 subExprs' e = error $ show e
 
-pathStr es = L.intercalate " ->\n" $ map show es
 
 dcPrefix = "lqdc"
 
@@ -501,6 +509,7 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
                           = Term fName $ map convert terms
     convert (EVar s)      = Term s []                  
     convert (PAnd es)     = Term "and$" $ map convert es
+    convert (POr es)      = Term "or$" $ map convert es
     convert (PAtom s l r) = Term (symbol $ "atom$" ++ show s) [convert l, convert r]
     convert (EBin o l r)  = Term (symbol $ "ebin$" ++ show o) [convert l, convert r]
     convert (ECon c)      = Term (symbol $ "econ$" ++ show c) []

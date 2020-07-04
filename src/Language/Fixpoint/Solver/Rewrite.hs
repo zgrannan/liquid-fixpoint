@@ -16,6 +16,8 @@ type Op = Symbol
 type OpOrdering = [Symbol]
 data Term = Term Symbol [Term]
 
+termSym (Term s _) = s
+
 instance Show Term where
   show (Term op [])   = TX.unpack $ symbolText op
   show (Term op args) = TX.unpack (symbolText op) ++ "(" ++ L.intercalate ", " (map show args) ++ ")"
@@ -117,16 +119,27 @@ subsequencesOfSize n xs = let l = length xs
    subsequencesBySize (x:xs) = let next = subsequencesBySize xs
                              in zipWith (++) ([]:next) (map (map (x:)) next ++ [[]])
 
-data TermOrigin = PLE | RW OpOrdering
+data TermOrigin = PLE | RW OpOrdering deriving (Show)
 
 data DivergeResult = Diverges | QuasiTerminates OpOrdering
+
+fromRW :: TermOrigin -> Bool
+fromRW (RW _) = True
+fromRW PLE    = False
 
 getOrdering :: TermOrigin -> Maybe OpOrdering
 getOrdering (RW o) = Just o
 getOrdering PLE    = Nothing
 
+-- maxRWsInPath = 3
+
+pathStr es = L.intercalate " ->\n" $ map show es
+
 diverges :: Maybe Int -> [(Term, TermOrigin)] -> Term -> DivergeResult
-diverges maxOrderingConstraints path term = go 0 
+-- diverges _ path _ | (length $ filter (fromRW . snd) path)  > maxRWsInPath = Diverges
+diverges maxOrderingConstraints path term =
+  -- trace ("Check diverge: " ++ pathStr path) $ go 0
+  go 0
   where
    path' = map fst path ++ [term]
    go n |    n > length syms'
@@ -150,12 +163,23 @@ divergesFor :: OpOrdering -> [(Term, TermOrigin)] -> Term -> Bool
 divergesFor o path term = any diverges' terms'
   where
     terms = map fst path ++ [term]
-    terms' = case snd (last path) of
-      (RW _) -> L.tails terms
-      _      -> L.subsequences terms
+    lastRWIndex =
+      Mb.fromMaybe 0 (fmap fst $ L.find (fromRW . snd . snd) $ reverse $ zip [1..] path) 
+    okTerms    = take lastRWIndex terms
+    checkTerms = drop lastRWIndex terms
+    terms' = L.subsequences checkTerms ++ do
+      firstpart  <- L.tails okTerms
+      secondpart <- L.inits checkTerms
+      return $ firstpart ++ secondpart
+    -- terms' = case snd (last path) of
+    --   (RW _) -> L.tails terms
+    --   _      -> L.subsequences terms
     diverges' :: [Term] -> Bool
     diverges' trms' =
-      any ascending (scp o trms') && all (not . descending) (scp o trms')
+      if length trms' <= 1 || termSym (head trms') /= termSym (last trms') then
+        False
+      else
+        any ascending (scp o trms') && all (not . descending) (scp o trms')
       
 descending :: SCPath -> Bool
 descending (a, b, ds) = a == b && L.elem SCDown ds && L.notElem SCUp ds
