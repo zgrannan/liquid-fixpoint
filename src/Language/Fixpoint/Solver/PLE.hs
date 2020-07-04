@@ -473,7 +473,7 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
     checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
     let termPath = map (\(t,o) -> (convert t, o)) path
-    case diverges termPath (convert expr') of
+    case diverges (knMaxRWOrderingConstraints γ) termPath (convert expr') of
       QuasiTerminates opOrdering  ->
         return (expr', RW opOrdering)
       Diverges ->
@@ -724,6 +724,7 @@ data Knowledge = KN
   , knSels    :: !(SelectorMap) 
   , knConsts  :: !(ConstDCMap)
   , knAutoRWs :: M.HashMap SubcId [AutoRewrite]
+  , knMaxRWOrderingConstraints :: Maybe Int
   }
 
 isValid :: Knowledge -> Expr -> IO Bool
@@ -746,6 +747,7 @@ knowledge cfg ctx si = KN
   , knSels    = Mb.catMaybes $ map makeSel  sims 
   , knConsts  = Mb.catMaybes $ map makeCons sims 
   , knAutoRWs = aenvAutoRW aenv
+  , knMaxRWOrderingConstraints = maxRWOrderingConstraints cfg
   } 
   where 
     sims = aenvSimpl aenv ++ concatMap reWriteDDecl (ddecls si) 

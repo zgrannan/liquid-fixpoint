@@ -117,8 +117,6 @@ subsequencesOfSize n xs = let l = length xs
    subsequencesBySize (x:xs) = let next = subsequencesBySize xs
                              in zipWith (++) ([]:next) (map (map (x:)) next ++ [[]])
 
-maxOrderingConstraints = 2
-
 data TermOrigin = PLE | RW OpOrdering
 
 data DivergeResult = Diverges | QuasiTerminates OpOrdering
@@ -127,11 +125,12 @@ getOrdering :: TermOrigin -> Maybe OpOrdering
 getOrdering (RW o) = Just o
 getOrdering PLE    = Nothing
 
-diverges :: [(Term, TermOrigin)] -> Term -> DivergeResult
-diverges path term = go 0 
+diverges :: Maybe Int -> [(Term, TermOrigin)] -> Term -> DivergeResult
+diverges maxOrderingConstraints path term = go 0 
   where
    path' = map fst path ++ [term]
-   go n | n >= length syms' || n > maxOrderingConstraints = Diverges
+   go n |    n > length syms'
+          || n > Mb.fromMaybe (length syms') maxOrderingConstraints = Diverges
    go n = case L.find (not . diverges') (orderings' n) of
      Just ordering -> QuasiTerminates ordering
      Nothing       -> go (n + 1)

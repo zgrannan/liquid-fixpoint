@@ -90,7 +90,8 @@ data Config = Config
   , oldPLE           :: Bool           -- ^ Use old version of PLE
   , noIncrPle        :: Bool           -- ^ Use incremental PLE
   , checkCstr        :: [Integer]      -- ^ Only check these specific constraints 
-  , extensionality   :: Bool           -- ^ Enable extensional interpretation of function equality 
+  , extensionality   :: Bool           -- ^ Enable extensional interpretation of function equality
+  , maxRWOrderingConstraints :: Maybe Int
   } deriving (Eq,Data,Typeable,Show,Generic)
 
 instance Default Config where
@@ -179,6 +180,7 @@ defConfig = Config {
   , noIncrPle        = False &= help "Don't use incremental PLE"
   , checkCstr        = []    &= help "Only check these specific constraint-ids" 
   , extensionality   = False &= help "Allow extensional interpretation of extensionality"
+  , maxRWOrderingConstraints = Nothing
   }
   &= verbosity
   &= program "fixpoint"
