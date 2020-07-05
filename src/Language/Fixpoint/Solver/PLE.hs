@@ -448,6 +448,15 @@ subExprs' (EBin op lhs rhs) = lhs'' ++ rhs''
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> EBin op lhs (f e'))) rhs'
     
+subExprs' (PImp lhs rhs) = lhs'' ++ rhs''
+  where
+    lhs' = subExprs lhs
+    rhs' = subExprs rhs
+    lhs'' :: [SubExpr]
+    lhs'' = map (\(e, f) -> (e, \e' -> PImp (f e') rhs)) lhs'
+    rhs'' :: [SubExpr]
+    rhs'' = map (\(e, f) -> (e, \e' -> PImp lhs (f e'))) rhs'
+    
 subExprs' (PAtom op lhs rhs) = lhs'' ++ rhs''
   where
     lhs' = subExprs lhs
@@ -457,7 +466,7 @@ subExprs' (PAtom op lhs rhs) = lhs'' ++ rhs''
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> PAtom op lhs (f e'))) rhs'
 
-subExprs' e@(EApp{}) = concatMap replace indexedArgs
+subExprs' e@(EApp{}) = [] -- concatMap replace indexedArgs
   where
     (f, es)          = splitEApp e
     indexedArgs      = zip [0..] es
