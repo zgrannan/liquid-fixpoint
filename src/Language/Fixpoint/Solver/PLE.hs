@@ -129,8 +129,8 @@ ple1 (InstEnv {..}) ctx i res =
 evalToSMT :: String -> Config -> SMT.Context -> (Expr, Expr) -> Pred 
 evalToSMT msg cfg ctx (e1,e2) = toSMT ("evalToSMT:" ++ msg) cfg ctx [] (EEq e1 e2)
 
-toPairs :: S.HashSet ([Expr], Expr) -> S.HashSet (Expr, Expr)
-toPairs = S.map (\(a,b) -> (last a, b))
+toPairs :: S.HashSet [(Expr, TermOrigin)] -> S.HashSet (Expr, Expr)
+toPairs = S.map (\lis -> (head lis, last lis))
 
 
 fromPairs :: S.HashSet (Expr, Expr) -> S.HashSet ([Expr], Expr)
@@ -148,33 +148,37 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
     go ictx | S.null (icCands ictx) = return ictx 
     go ictx =  do let cands = icCands ictx
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
-                  evalResults   <- SMT.smtBracket ctx "PLE.evaluate" $ do
+                  evalResults   <- trace "evalCandsLoop" $ SMT.smtBracket ctx "PLE.evaluate" $ do
                                SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx)) 
                                mapM (evalOne γ env' ictx) (S.toList cands)
                   let us = mconcat evalResults 
                   if S.null (us `S.difference` icEquals ictx)
                         then return ictx 
-                        else do  let oks      = (last . fst) `S.map` us
+                        else do  let oks      = (fst . last) `S.map` us
                                  let us'      = withRewrites us 
                                  let eqsSMT   = evalToSMT "evalCandsLoop" cfg ctx `S.map` (toPairs us')
                                  let ictx'    = ictx { icSolved = icSolved ictx <> oks 
                                                      , icEquals = icEquals ictx <> us'
 
                                                      , icAssms  = icAssms  ictx <> S.filter (not . isTautoPred) eqsSMT }
-                                 let newcands = mconcat (makeCandidates γ ictx' <$> S.toList (cands <> (snd `S.map` us)))
+                                 let newcands = mconcat (makeCandidates' γ ictx' <$> S.toList (cands <> us))
                                  go (ictx' { icCands = S.fromList newcands})
                                  
 
+makeCandidates' γ ctx path = do
+  candidate <- makeCandidates γ ctx (fst . last path)
+  return $ path ++ [(candidate, PLE)]
+  
 
-rewrite :: Expr -> Rewrite -> [(Expr,Expr)] 
+rewrite :: Expr -> Rewrite -> [Expr] 
 rewrite e rw = Mb.catMaybes $ map (`rewriteTop` rw) (notGuardedApps e)
 
-rewriteTop :: Expr -> Rewrite -> Maybe (Expr,Expr) 
-rewriteTop e rw
+rewriteTop :: SubExpr -> Rewrite -> Maybe Expr
+rewriteTop (e, toE) rw
   | (EVar f, es) <- splitEApp e
   , f == smDC rw
   , length es == length (smArgs rw)
-  = Just (EApp (EVar $ smName rw) e, subst (mkSubst $ zip (smArgs rw) es) (smBody rw))
+  = Just $ toE $ subst (mkSubst $ zip (smArgs rw) es) (smBody rw)
   | otherwise
   = Nothing
 
@@ -210,8 +214,8 @@ data InstEnv a = InstEnv
 
 data ICtx    = ICtx 
   { icAssms    :: S.HashSet Pred            -- ^ Equalities converted to SMT format
-  , icCands    :: S.HashSet Expr            -- ^ "Candidates" for unfolding
-  , icEquals   :: S.HashSet ([Expr], Expr)     -- ^ Accumulated equalities
+  , icCands    :: S.HashSet [(Expr, TermOrigin)] -- ^ "Candidates" for unfolding
+  , icEquals   :: S.HashSet [(Expr, TermOrigin)] -- ^ Accumulated equalities
   , icSolved   :: S.HashSet Expr            -- ^ Terms that we have already expanded
   , icSimpl    :: !ConstMap                 -- ^ Map of expressions to constants
   , icSubcId   :: Maybe SubcId              -- ^ Current subconstraint ID
@@ -271,13 +275,15 @@ updCtx InstEnv {..} ctx delta cidMb
                         -- trace (show (map (\(a,b) -> (a, _cenv b)) ieCstrs) ++ "----" ++ show delta ++ "-----" ++ (show cidMb)) cidMb 
                     }
   where         
-    initEqs   = S.fromList $ concat [rewrite e rw | e  <- (cands ++ (snd <$> S.toList (icEquals ctx)))
-                                                  , rw <- knSims ieKnowl]
-    cands     = concatMap (makeCandidates ieKnowl ctx) (rhs:es)
-    sims      = S.filter (isSimplification (knDCs ieKnowl)) (initEqs <> toPairs (icEquals ctx))
+    initEqs   = S.fromList $ [ list ++ [(result, PLE)] | list <- (cands ++ S.toList (icEquals ctx))
+                                                       , rw <- knSims ieKnowl
+                                                       , result <- rewrite (fst $ last list) rw ]
+    cands :: [[(Expr, TermOrigin)]]
+    cands     = concatMap (makeCandidates' ieKnowl ctx) (rhs:es)
+    sims      = S.filter (isSimplification (knDCs ieKnowl)) (toPairs $ S.union initEqs (icEquals ctx))
     econsts   = M.fromList $ findConstants ieKnowl es
     ctxEqs    = toSMT "updCtx" ieCfg ieSMT [] <$> L.nub (concat 
-                  [ equalitiesPred initEqs 
+                  [ equalitiesPred (toPairs $ initEqs)
                   , equalitiesPred sims 
                   , equalitiesPred (toPairs $ icEquals ctx)
                   , [ expr xr   | xr@(_, r) <- bs, null (Vis.kvars r) ] 
@@ -301,11 +307,11 @@ findConstants γ es = [(EVar x, c) | (x,c) <- go [] (concatMap splitPAnd es)]
                            , isConstant (knDCs γ) c
                            , EVar x /= c ]
 
-makeCandidates :: Knowledge -> ICtx -> Expr -> [Expr]
+makeCandidates :: Knowledge -> ICtx -> Expr -> [SubExpr]
 makeCandidates γ ctx expr 
   = mytracepp ("\n" ++ show (length cands) ++ " New Candidates") cands
   where 
-    cands = filter (\e -> isRedex γ e && (not (e `S.member` icSolved ctx))) (notGuardedApps expr)
+    cands = filter (\(e, _) -> isRedex γ e && (not (e `S.member` icSolved ctx))) (notGuardedApps expr)
 
 isRedex :: Knowledge -> Expr -> Bool 
 isRedex γ e = isGoodApp γ e || isIte e 
@@ -335,33 +341,46 @@ isPleCstr aenv sid c = isTarget c && M.lookupDefault False sid (aenvExpand aenv)
 --------------------------------------------------------------------------------
 data EvalEnv = EvalEnv
   { evEnv      :: !SymEnv
-  , evAccum    :: S.HashSet ([Expr], Expr)
+  , evAccum    :: S.HashSet [(Expr, TermOrigin)]
   }
 
 type EvalST a = StateT EvalEnv IO a
 --------------------------------------------------------------------------------
 
-evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO (S.HashSet ([Expr], Expr))
-evalOne γ env ctx e = do
-  (e',st) <- runStateT (eval γ ctx [(e, PLE)]) env
+evalOne :: Knowledge -> EvalEnv -> ICtx -> [(Expr, TermOrigin)] -> IO (S.HashSet [(Expr, TermOrigin)])
+evalOne γ env ctx path = do
+  (_,st) <- runStateT (eval γ ctx path) env
   return $ evAccum st
   -- return $ if e' == e then evAccum st else S.insert ([e], e') (evAccum st)
 
-notGuardedApps :: Expr -> [Expr]
+
+binApps :: (Expr -> [SubExpr]) -> (Expr -> Expr -> Expr) -> Expr -> Expr -> [SubExpr]
+binApps go f e1 e2 = lhs ++ rhs
+  where
+    lhs = mapSubE (f e1) (go e2)
+    rhs = mapSubE (flip f e2) (go e1)
+
+mapSubE :: (Expr -> Expr) -> [SubExpr] -> [SubExpr]
+mapSubE f subExprs = do
+  (e, toE) <- subExprs
+  return (e, f . toE)
+  
+
+notGuardedApps :: Expr -> [SubExpr]
 notGuardedApps = go 
   where 
-    go e@(EApp e1 e2)  = [e] ++ go e1 ++ go e2
-    go (PAnd es)       = concatMap go es
-    go (POr es)        = concatMap go es
-    go (PAtom _ e1 e2) = go e1  ++ go e2
-    go (PIff e1 e2)    = go e1  ++ go e2
-    go (PImp e1 e2)    = go e1  ++ go e2 
-    go (EBin  _ e1 e2) = go e1  ++ go e2
-    go (PNot e)        = go e
-    go (ENeg e)        = go e
-    go e@(EIte b _ _)  = go b ++ [e] -- ++ go e1 ++ go e2  
-    go (ECoerc _ _ e)  = go e 
-    go (ECst e _)      = go e 
+    go e@(EApp e1 e2)  = [(e, id)] ++ binApps go EApp e1 e2
+    -- go (PAnd es)       = concatMap go es
+    -- go (POr es)        = concatMap go es
+    go (PAtom o e1 e2) = binApps go (PAtom o) e1 e2
+    go (PIff e1 e2)    = binApps go PIff e1 e2
+    go (PImp e1 e2)    = binApps go PImp e1 e2
+    go (EBin o e1 e2)  = binApps go (EBin o) e1 e2
+    go (PNot e)        = mapSubE PNot (go e)
+    go (ENeg e)        = mapSubE ENeg (go e)
+    go e@(EIte b e1 e2)  = [(e, id)] ++ mapSubE (\b' -> EIte b' e1 e2) (go b)
+    go (ECoerc a b e)  = mapSubE (ECoerc a b) (go e)
+    go (ECst e c)      = mapSubE (flip ECst c) (go e)
     go (ESym _)        = []
     go (ECon _)        = []
     go (EVar _)        = []
@@ -372,6 +391,31 @@ notGuardedApps = go
     go (PAll _ _)      = []
     go (PExist _ _)    = []
     go (PGrad{})       = []
+-- notGuardedApps :: Expr -> [Expr]
+-- notGuardedApps = go 
+--   where 
+--     go e@(EApp e1 e2)  = [e] ++ go e1 ++ go e2
+--     go (PAnd es)       = concatMap go es
+--     go (POr es)        = concatMap go es
+--     go (PAtom _ e1 e2) = go e1  ++ go e2
+--     go (PIff e1 e2)    = go e1  ++ go e2
+--     go (PImp e1 e2)    = go e1  ++ go e2 
+--     go (EBin  _ e1 e2) = go e1  ++ go e2
+--     go (PNot e)        = go e
+--     go (ENeg e)        = go e
+--     go e@(EIte b _ _)  = go b ++ [e] ++ go e1 ++ go e2  
+--     go (ECoerc _ _ e)  = go e 
+--     go (ECst e _)      = go e 
+--     go (ESym _)        = []
+--     go (ECon _)        = []
+--     go (EVar _)        = []
+--     go (ELam _ _)      = []
+--     go (ETApp _ _)     = []
+--     go (ETAbs _ _)     = []
+--     go (PKVar _ _)     = []
+--     go (PAll _ _)      = []
+--     go (PExist _ _)    = []
+--     go (PGrad{})       = []
 
 unifyAll :: [Symbol] -> [Expr] -> [Expr] -> Maybe Subst
 unifyAll _ []     []               = Just (Su M.empty)
@@ -430,7 +474,7 @@ type SubExpr = (Expr, Expr -> Expr)
 subExprs :: Expr -> [SubExpr]
 subExprs e = (e,id):subExprs' e
 
-subExprs' (EIte c lhs rhs)  = c'' ++ l'' ++ r''
+subExprs' (EIte c lhs rhs)  = c'' -- ++ l'' ++ r''
   where
     c' = subExprs c
     l' = subExprs lhs
@@ -457,13 +501,15 @@ subExprs' (PAtom op lhs rhs) = lhs'' ++ rhs''
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> PAtom op lhs (f e'))) rhs'
 
-subExprs' e@(EApp{}) = concatMap replace indexedArgs
-  where
-    (f, es)          = splitEApp e
-    indexedArgs      = zip [0..] es
-    replace (i, arg) = do
-      (subArg, toArg) <- subExprs arg
-      return (subArg, \subArg' -> eApps f $ (take i es) ++ (toArg subArg'):(drop (i+1) es))
+-- No need to explicitly check subexprs, will evaluate them eventually
+subExprs' (EApp{}) = []
+-- subExprs' e@(EApp{}) = concatMap replace indexedArgs
+--   where
+--     (f, es)          = splitEApp e
+--     indexedArgs      = zip [0..] es
+--     replace (i, arg) = do
+--       (subArg, toArg) <- subExprs arg
+--       return (subArg, \subArg' -> eApps f $ (take i es) ++ (toArg subArg'):(drop (i+1) es))
       
 subExprs' (PAnd [])   = []
 subExprs' (POr  [])   = []
@@ -486,6 +532,7 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
     -- checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
     let termPath = map (\(t,o) -> (convert t, o)) path
+    liftIO $ putStrLn $ "Checking divergence for path (length " ++ show (length path) ++ "): " ++ pathStr termPath
     case diverges (knMaxRWOrderingConstraints γ) termPath (convert expr') of
       QuasiTerminates opOrdering  ->
         return (expr', RW opOrdering)
@@ -552,7 +599,7 @@ eval _ ctx path
   , e         <- last pathExprs
   , Just v    <- M.lookup e (icSimpl ctx)
   = if v /= e
-    then modify (\st -> st { evAccum = S.insert (pathExprs, v) (evAccum st)})
+    then modify (\st -> st { evAccum = S.insert (path ++ [(v, PLE)]) (evAccum st)})
     else mzero
         
 eval γ ctx path =
@@ -560,8 +607,8 @@ eval γ ctx path =
     rws <- getRWs 
     e'  <- simplify γ ctx <$> evalStep γ ctx e
     let evalIsNewExpr = L.notElem e' pathExprs
-    let exprsToAdd = (if evalIsNewExpr then [e'] else []) ++ map fst rws
-    let evAccum' = S.fromList $ map (pathExprs, ) $ exprsToAdd
+    let exprsToAdd = (if evalIsNewExpr then [(e', PLE)] else []) ++ rws
+    let evAccum' = S.fromList $ map ((path ++) . return)  $ exprsToAdd
     modify (\st -> st { evAccum = S.union evAccum' (evAccum st)})
     if evalIsNewExpr 
       then eval γ (addConst (e,e') ctx) (path ++ [(e', PLE)])
