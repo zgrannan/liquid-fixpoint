@@ -14,7 +14,8 @@ import qualified Data.Text as TX
 
 type Op = Symbol
 type OpOrdering = [Symbol]
-data Term = Term Symbol [Term]
+data Term = Term Symbol [Term] deriving (Eq, Generic)
+instance Hashable Term
 
 termSym (Term s _) = s
 
@@ -119,7 +120,7 @@ subsequencesOfSize n xs = let l = length xs
    subsequencesBySize (x:xs) = let next = subsequencesBySize xs
                              in zipWith (++) ([]:next) (map (map (x:)) next ++ [[]])
 
-data TermOrigin = PLE | RW OpOrdering deriving (Show)
+data TermOrigin = PLE | RW OpOrdering deriving (Show, Eq)
 
 data DivergeResult = Diverges | QuasiTerminates OpOrdering
 

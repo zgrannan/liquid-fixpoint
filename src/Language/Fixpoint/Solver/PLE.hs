@@ -483,7 +483,7 @@ getRewrites γ symEnv path  (subE, toE) (AutoRewrite args lhs rhs) =
     guard $ all ( (/= expr') . fst) path
     let (argSorts', exprSorts') = sortsToUnify (M.toList suMap)
     let (argSorts, exprSorts)   = (gSorts argSorts', gSorts exprSorts')
-    checkSorts argSorts exprSorts
+    -- checkSorts argSorts exprSorts
     mapM_ (check . subst su) exprs
     let termPath = map (\(t,o) -> (convert t, o)) path
     case diverges (knMaxRWOrderingConstraints γ) termPath (convert expr') of
