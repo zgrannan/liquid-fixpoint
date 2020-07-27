@@ -21,6 +21,9 @@
 
 module Language.Fixpoint.Solver.PLE (instantiate) where
 
+import           System.IO.Unsafe
+import           Data.Hashable
+import           Data.IORef
 import           Language.Fixpoint.Types hiding (simplify)
 import           Language.Fixpoint.Types.Config  as FC
 import qualified Language.Fixpoint.Types.Visitor as Vis
@@ -40,6 +43,17 @@ import qualified Data.HashSet         as S
 import qualified Data.List            as L
 import qualified Data.Maybe           as Mb
 import           Debug.Trace          (trace)
+import           System.CPUTime
+import           Text.Printf
+
+time :: String -> IO a -> IO a
+time actionName action = do
+  start  <- liftIO $ getCPUTime
+  result <- action
+  end    <- getCPUTime
+  let diff = fromIntegral (end - start) / 10^12
+  printf "%s: %0.9f\n" actionName (diff :: Double)
+  return result
 
 mytracepp :: (PPrint a) => String -> a -> a
 mytracepp = notracepp
@@ -300,7 +314,10 @@ makeCandidates :: Knowledge -> ICtx -> Expr -> [Expr]
 makeCandidates γ ctx expr 
   = mytracepp ("\n" ++ show (length cands) ++ " New Candidates") cands
   where 
-    cands = filter (\e -> isRedex γ e && (not (e `S.member` icSolved ctx))) (notGuardedApps expr)
+    cands = filter (\e -> isRedex γ e
+                     && (not (e `S.member` icSolved ctx))
+                     && (not (e `S.member` icAssms ctx))
+                   ) (notGuardedApps expr)
 
 isRedex :: Knowledge -> Expr -> Bool 
 isRedex γ e = isGoodApp γ e || isIte e 
@@ -344,9 +361,26 @@ getAutoRws γ ctx =
     cid <- icSubcId ctx
     M.lookup cid $ knAutoRWs γ
 
+-- cache :: IO (IORef (S.Map Expr EvAccum))
+cache = unsafePerformIO $ newIORef M.empty
+
+cached :: (Eq a, Hashable a) => IORef (M.HashMap a b) -> (a -> IO b) -> a -> IO b
+cached ref f x = do
+  c'  <- readIORef ref
+  case M.lookup x c' of
+    Just r -> do
+      -- putStrLn "Cache Hit"
+      return r
+    Nothing -> do
+      r <- f x
+      writeIORef ref (M.insert x r c')
+      return r
+      
+
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
-evalOne γ env ctx e | null $ getAutoRws γ ctx = do
-    (e',st) <- runStateT (fastEval γ ctx e) env 
+evalOne γ env ctx e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
+    -- (e',st) <- runStateT (fastEval γ ctx e)
+    (e', st) <- cached cache (\ee -> runStateT (fastEval γ ctx ee) env) e
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
 evalOne γ env ctx e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
