@@ -316,7 +316,6 @@ makeCandidates γ ctx expr
   where 
     cands = filter (\e -> isRedex γ e
                      && (not (e `S.member` icSolved ctx))
-                     && (not (e `S.member` icAssms ctx))
                    ) (notGuardedApps expr)
 
 isRedex :: Knowledge -> Expr -> Bool 
