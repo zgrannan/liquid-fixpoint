@@ -580,11 +580,13 @@ fastEvalIte :: Knowledge -> ICtx -> Expr -> Expr -> Expr -> Expr -> EvalST Expr
 fastEvalIte γ ctx _ b0 e1 e2 = do 
   b <- fastEval γ ctx b0 
   b'  <- liftIO $ (mytracepp ("evalEIt POS " ++ showpp b) <$> isValid γ b)
-  nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid γ (PNot b))
-  if b' 
-    then return $ e1 
-    else if nb' then return $ e2 
-    else return $ EIte b e1 e2  
+  if b'
+    then return e1
+    else do
+      nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid γ (PNot b))
+      if nb'
+        then return $ e2 
+        else return $ EIte b e1 e2  
 
 evalIte :: Knowledge -> ICtx -> Expr -> Expr -> Expr -> Expr -> EvalST Expr
 evalIte γ ctx _ b0 e1 e2 = do 
