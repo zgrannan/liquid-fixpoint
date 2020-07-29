@@ -119,7 +119,7 @@ loopT env ctx delta i res t = case t of
   T.Node []  -> return res
   T.Node [b] -> loopB env ctx delta i res b
   T.Node bs  -> withAssms env ctx delta Nothing $ \ctx' -> do 
-                  (ctx'', res') <- ple1 env ctx' i res 
+                  (ctx'', res') <- ple1 env ctx' delta i res 
                   foldM (loopB env ctx'' [] i) res' bs
 
 loopB :: InstEnv a -> ICtx -> Diff -> Maybe BindId -> InstRes -> CBranch -> IO InstRes
@@ -127,7 +127,7 @@ loopB env ctx delta iMb res b = case b of
   T.Bind i t -> loopT env ctx (i:delta) (Just i) res t
   T.Val cid  -> withAssms env ctx delta (Just cid) $ \ctx' -> do 
                   progressTick
-                  (snd <$> ple1 env ctx' iMb res) 
+                  (snd <$> ple1 env ctx' delta iMb res) 
 
 
 withAssms :: InstEnv a -> ICtx -> Diff -> Maybe SubcId -> (ICtx -> IO b) -> IO b 
@@ -139,16 +139,16 @@ withAssms env@(InstEnv {..}) ctx delta cidMb act = do
     act ctx'
 
 -- | @ple1@ performs the PLE at a single "node" in the Trie 
-ple1 :: InstEnv a -> ICtx -> Maybe BindId -> InstRes -> IO (ICtx, InstRes)
-ple1 (InstEnv {..}) ctx i res = 
-  updCtxRes res i <$> evalCandsLoop ieCfg ctx ieSMT ieKnowl ieEvEnv
+ple1 :: InstEnv a -> ICtx -> Diff -> Maybe BindId -> InstRes -> IO (ICtx, InstRes)
+ple1 (InstEnv {..}) ctx delta i res = 
+  updCtxRes res i <$> evalCandsLoop ieCfg ctx ieSMT delta ieKnowl ieEvEnv
 
 
 evalToSMT :: String -> Config -> SMT.Context -> (Expr, Expr) -> Pred 
 evalToSMT msg cfg ctx (e1,e2) = toSMT ("evalToSMT:" ++ msg) cfg ctx [] (EEq e1 e2)
 
-evalCandsLoop :: Config -> ICtx -> SMT.Context -> Knowledge -> EvalEnv -> IO ICtx 
-evalCandsLoop cfg ictx0 ctx γ env = go ictx0 
+evalCandsLoop :: Config -> ICtx -> SMT.Context -> Diff -> Knowledge -> EvalEnv -> IO ICtx 
+evalCandsLoop cfg ictx0 ctx delta γ env = go ictx0 
   where
     withRewrites exprs =
       let
@@ -161,7 +161,7 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
                   evalResults   <- SMT.smtBracket ctx "PLE.evaluate" $ do
                                SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx)) 
-                               mapM (evalOne γ env' ictx) (S.toList cands)
+                               mapM (evalOne γ env' ictx delta) (S.toList cands)
                   let us = mconcat evalResults 
                   if S.null (us `S.difference` icEquals ictx)
                         then return ictx 
@@ -363,6 +363,14 @@ getAutoRws γ ctx =
 -- cache :: IO (IORef (S.Map Expr EvAccum))
 cache = unsafePerformIO $ newIORef M.empty
 
+cacheGet x = do
+  c' <- readIORef cache
+  return $ Mb.fromMaybe S.empty (M.lookup x c')
+  
+cacheSet x s = do
+  c' <- readIORef cache
+  writeIORef cache  (M.insert x s c')
+
 cached :: (Eq a, Hashable a) => IORef (M.HashMap a b) -> (a -> IO b) -> a -> IO b
 cached ref f x = do
   c'  <- readIORef ref
@@ -376,12 +384,14 @@ cached ref f x = do
       return r
       
 
-evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
-evalOne γ env ctx e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
-    -- (e',st) <- runStateT (fastEval γ ctx e)
-    (e', st) <- cached cache (\ee -> runStateT (fastEval γ ctx ee) env) e
+evalOne :: Knowledge -> EvalEnv -> ICtx -> Diff -> Expr -> IO EvAccum
+evalOne γ env ctx diff e | null $ getAutoRws γ ctx = do -- time (printf "%s, %s" (show diff) (show $ hash e)) $ do
+    acc <- cacheGet e
+    (e',st) <- runStateT (fastEval γ ctx e) env {evAccum = evAccum env <> acc}
+    cacheSet e (evAccum st)
+    -- (e', st) <- cached cache (\(ee, _) -> runStateT (fastEval γ ctx ee) env) (e, diff)
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
-evalOne γ env ctx e =
+evalOne γ env ctx diff e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
 
 notGuardedApps :: Expr -> [Expr]
