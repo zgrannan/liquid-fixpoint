@@ -378,8 +378,8 @@ cached ref f x = do
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
 evalOne γ env ctx e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
-    -- (e',st) <- runStateT (fastEval γ ctx e)
-    (e', st) <- cached cache (\ee -> runStateT (fastEval γ ctx ee) env) e
+    (e',st) <- runStateT (fastEval γ ctx e) env
+    -- (e', st) <- cached cache (\ee -> runStateT (fastEval γ ctx ee) env) e
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
 evalOne γ env ctx e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
@@ -601,23 +601,32 @@ eqArgNames :: Equation -> [Symbol]
 eqArgNames = map fst . eqArgs
 
 evalBool :: Knowledge -> Expr -> EvalST (Maybe Expr) 
-evalBool γ e = do 
-  bt <- liftIO $ isValid γ e
-  if bt then return $ Just PTrue 
-   else do 
-    bf <- liftIO $ isValid γ (PNot e)
-    if bf then return $ Just PFalse 
-          else return Nothing
+evalBool γ e = do
+  be <- liftIO $ badEnv γ
+  if be
+    then return Nothing
+    else do
+      bt <- liftIO $ isValid' γ e
+      if bt
+        then return $ Just PTrue 
+        else do 
+          bf <- liftIO $ isValid' γ (PNot e)
+          if bf then return $ Just PFalse 
+                else return Nothing
                
 fastEvalIte :: Knowledge -> ICtx -> Expr -> Expr -> Expr -> Expr -> EvalST Expr
 fastEvalIte γ ctx _ b0 e1 e2 = do 
-  b <- fastEval γ ctx b0 
-  b'  <- liftIO $ (mytracepp ("evalEIt POS " ++ showpp b) <$> isValid γ b)
-  nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid γ (PNot b))
-  if b' 
-    then return $ e1 
-    else if nb' then return $ e2 
-    else return $ EIte b e1 e2  
+  b <- fastEval γ ctx b0
+  be <- liftIO $ badEnv γ
+  if be
+    then return $ EIte b e1 e2
+    else do
+      b'  <- liftIO $ (mytracepp ("evalEIt POS " ++ showpp b) <$> isValid' γ b)
+      nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid' γ (PNot b))
+      if b' 
+        then return $ e1 
+        else if nb' then return $ e2 
+        else return $ EIte b e1 e2  
 
 evalIte :: Knowledge -> ICtx -> Expr -> Expr -> Expr -> Expr -> EvalST Expr
 evalIte γ ctx _ b0 e1 e2 = do 
@@ -648,6 +657,10 @@ data Knowledge = KN
   , knAutoRWs           :: M.HashMap SubcId [AutoRewrite]
   , knRWTerminationOpts :: RWTerminationOpts
   }
+
+badEnv γ     = knPreds γ (knContext γ) (knLams γ) PFalse
+isValid' γ e = knPreds γ (knContext γ) (knLams γ) e
+
 
 isValid :: Knowledge -> Expr -> IO Bool
 isValid γ e = do 
