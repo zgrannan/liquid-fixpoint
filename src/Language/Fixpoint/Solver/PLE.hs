@@ -147,10 +147,22 @@ withAssms env@(InstEnv {..}) ctx delta cidMb act = do
   SMT.smtBracket ieSMT  "PLE.evaluate" $ do
     forM_ assms (SMT.smtAssert ieSMT) 
     act ctx'
+    
+ple1Check = unsafePerformIO $ newIORef S.empty
+
+onlyOnce bindID = do
+  set <- readIORef ple1Check
+  -- printf "Check %d %s\n" bindID (show set)
+  if S.member bindID set
+    then error $ "Duplicate bindID" ++ show bindID
+    else writeIORef ple1Check $ S.insert bindID set
 
 -- | @ple1@ performs the PLE at a single "node" in the Trie 
 ple1 :: InstEnv a -> ICtx -> Path -> InstRes -> IO (ICtx, InstRes)
-ple1 (InstEnv {..}) ctx path res = 
+ple1 (InstEnv {..}) ctx path res = do
+  case (lastBindID path) of
+    Just bindID -> onlyOnce bindID
+    Nothing -> return ()
   updCtxRes res (lastBindID path) <$>
     evalCandsLoop ieCfg ctx ieSMT ieKnowl ieEvEnv path ieBEnv
 
@@ -374,30 +386,56 @@ getAutoRws γ ctx =
 -- cache :: IO (IORef (S.Map Expr EvAccum))
 cache = unsafePerformIO $ newIORef M.empty
 
-cached :: (Eq a, Hashable a) => IORef (M.HashMap a b) -> (a -> IO b) -> a -> IO b
-cached ref f x = do
+withCache :: (Eq a, Hashable a) => IORef (M.HashMap a b) -> (a -> IO b) -> a -> IO b
+withCache ref f x = do
   c'  <- readIORef ref
   case M.lookup x c' of
     Just r -> do
-      putStrLn "Cache Hit"
+      -- putStrLn "Cache Hit"
       return r
     Nothing -> do
       r <- f x
       writeIORef ref (M.insert x r c')
       return r
       
+cacheCompare :: (Eq a, Hashable a) => IORef (M.HashMap a b) -> (a -> IO b) -> a -> (b -> b -> Bool) -> IO b
+cacheCompare ref f x cmp = do
+  c'  <- readIORef ref
+  r <- f x
+  case M.lookup x c' of
+    Just cached -> do
+      putStrLn $
+        if cmp r cached
+        then "Cache Hit...Same"
+        else "Cache Hit...Different"
+      return cached
+    Nothing -> do
+      putStrLn "Cache Miss"
+      -- writeIORef ref (M.insert x r c')
+      return r
+      
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Path -> BindEnv -> Expr -> IO EvAccum
-evalOne γ env ctx p ieBEnv e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
-    -- (e',st) <- runStateT (fastEval γ ctx e)
-    (e', st) <- cached cache (\(ee, _) -> runStateT (fastEval γ ctx ee) env) (e, pathCache)
+evalOne γ env ctx (Path pe) ieBEnv e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
+    -- mapM_ checkImp pairs
+    -- (e', st) <- cacheCompare cache go (e, pathCache) (\x y -> fst x == fst y)
+    (e',st) <- runStateT (fastEval γ ctx e) env
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
     where
-      pathCache = filterPath isRefined p
-      isRefined bindID = 
+      go (ee, _) = do
+        runStateT (fastEval γ ctx ee) env
+      hasContraPred = any (isContraPred . getReft) pe
+      pairs = zip pathCache (tail pathCache)
+      getReft bindID =
         let (_, (RR _ (Reft (_, reft)))) = lookupBindEnv bindID ieBEnv
-        in reft /= PTrue
-        -- in if reft == PTrue then error "boom" else True
+        in reft
+      checkImp (t1, t2) = do
+        let r1 = getReft t1
+        let r2 = getReft t2
+        r <- isValid γ (PImp r1 r2)
+        if r then putStrLn (error "Boom") else return ()
+      pathCache = filter isRefined pe
+      isRefined = not . isTautoPred . getReft
         
         
 evalOne γ env ctx _ _ e =
