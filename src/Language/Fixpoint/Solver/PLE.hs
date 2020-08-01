@@ -145,7 +145,8 @@ withAssms env@(InstEnv {..}) ctx delta cidMb act = do
   let ctx'  = updCtx env ctx delta cidMb 
   let assms = icAssms ctx'
   SMT.smtBracket ieSMT  "PLE.evaluate" $ do
-    forM_ assms (SMT.smtAssert ieSMT) 
+    forM_ assms (SMT.smtAssert ieSMT)
+    -- forM_ assms (\asm -> printf "Adding asm %s\n" (show asm))
     act ctx'
     
 ple1Check = unsafePerformIO $ newIORef S.empty
@@ -419,7 +420,9 @@ evalOne :: Knowledge -> EvalEnv -> ICtx -> Path -> BindEnv -> Expr -> IO EvAccum
 evalOne γ env ctx (Path pe) ieBEnv e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
     -- mapM_ checkImp pairs
     -- (e', st) <- cacheCompare cache go (e, pathCache) (\x y -> fst x == fst y)
+    -- printf "Eval %s\n" (show e)
     (e',st) <- runStateT (fastEval γ ctx e) env
+    -- printf "Eval %s result: %s\n" (show e) (show e')
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
     where
       go (ee, _) = do
@@ -499,7 +502,7 @@ fastEval γ ctx e =
     go (ECoerc s t e)   = ECoerc s t  <$> go e
     go e@(EApp _ _)     = case splitEApp e of 
                            (f, es) -> do (f':es') <- mapM (fastEval γ ctx) (f:es) 
-                                         evalApp γ (eApps f' es) (f',es')
+                                         evalApp γ ctx (eApps f' es) (f',es')
     go e@(PAtom r e1 e2) = fromMaybeM (PAtom r <$> go e1 <*> go e2) (evalBool γ e)
     go (ENeg e)         = do e'  <- fastEval γ ctx e
                              return $ ENeg e'
@@ -510,6 +513,22 @@ fastEval γ ctx e =
     go (ETAbs e s)      = flip ETAbs s <$> go e
     go e@(PNot e')      = fromMaybeM (PNot <$> go e')           (evalBool γ e)
     go e@(PImp e1 e2)   = fromMaybeM (PImp <$> go e1 <*> go e2) (evalBool γ e)
+    -- go e@(PImp e1 e2)   = fromMaybeM fb eb 
+    --   where
+    --     eb = do
+    --       r <- evalBool γ e
+    --       -- liftIO $ printf "impliciation %s evaled to %s\n" (show e) (show r)
+    --       return r
+    --     fb = do
+    --       liftIO $ putStrLn "Anyone there?"
+    --       e1' <- go e1
+    --       st <- get
+    --       (e2', st') <-
+    --         liftIO $ SMT.smtBracket (knContext γ) "hehe" $ do
+    --           SMT.smtAssert (knContext γ) e1'
+    --           putStrLn $ "Running with assumption" ++ (show e1)
+    --           runStateT (go e2) st
+    --       return $ PImp e1' e2'
     go e@(PIff e1 e2)   = fromMaybeM (PIff <$> go e1 <*> go e2) (evalBool γ e)
     go e@(PAnd es)      = fromMaybeM (PAnd <$> (go  <$$> es))   (evalBool γ e)
     go e@(POr es)       = fromMaybeM (POr  <$> (go <$$> es))    (evalBool γ e)
@@ -569,7 +588,7 @@ evalStep γ ctx e@(EApp _ _)     = case splitEApp e of
             es' <- mapM (evalStep γ ctx) es
             if es /= es'
               then return (eApps f' es')
-              else evalApp γ (eApps f' es') (f',es')
+              else evalApp γ ctx (eApps f' es') (f',es')
 evalStep γ ctx e@(PAtom r e1 e2) =
   fromMaybeM (PAtom r <$> evalStep γ ctx e1 <*> evalStep γ ctx e2) (evalBool γ e)
 evalStep γ ctx (ENeg e) = ENeg <$> evalStep γ ctx e
@@ -600,21 +619,37 @@ f <$$> xs = f Misc.<$$> xs
 
 
  
-evalApp :: Knowledge -> Expr -> (Expr, [Expr]) -> EvalST Expr
-evalApp γ _ (EVar f, es) 
+evalApp :: Knowledge -> ICtx -> Expr -> (Expr, [Expr]) -> EvalST Expr
+evalApp γ ctx e (EVar f, es) 
   | Just eq <- L.find ((== f) . eqName) (knAms γ)
   , length (eqArgs eq) <= length es 
   = do env <- seSort <$> gets evEnv
+       ac <- gets evAccum
        let (es1,es2) = splitAt (length (eqArgs eq)) es
-       return $ eApps (substEq env eq es1) es2 
+       shortcut (substEq env eq es1) es2
+  where
+    shortcut e'@(EIte i e1 e2) es2 = do
+      b   <- fastEval γ ctx i
+      b'  <- liftIO $ (mytracepp ("evalEIt POS " ++ showpp b) <$> isValid γ b)
+      nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid γ (PNot b))
+      r <- if b' 
+        then shortcut e1 es2
+        else if nb' then shortcut e2 es2
+        else return $ eApps e' es2
+      -- liftIO $ printf "%s evaled to %s (fast?)\n" (show e) (show r)
+      return r
+    shortcut e' es2 = return $ eApps e' es2
 
-evalApp γ _ (EVar f, e:es) 
+evalApp γ ctx ee (EVar f, e:es) 
   | (EVar dc, as) <- splitEApp e
   , Just rw <- L.find (\rw -> smName rw == f && smDC rw == dc) (knSims γ)
   , length as == length (smArgs rw)
-  = return $ eApps (subst (mkSubst $ zip (smArgs rw) as) (smBody rw)) es 
+  = do
+      r <- return $ eApps (subst (mkSubst $ zip (smArgs rw) as) (smBody rw)) es 
+      -- liftIO $ printf "Got from dc %s -> %s\n" (show ee) (show r)
+      return r
 
-evalApp _ e _
+evalApp _ _ e _
   = return e 
   
 --------------------------------------------------------------------------------
