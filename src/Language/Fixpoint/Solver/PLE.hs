@@ -405,7 +405,7 @@ fastEval γ ctx e =
     addConst (e,e') ctx = if isConstant (knDCs γ) e'
                            then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
     go (ELam (x,s) e)   = ELam (x, s) <$> fastEval γ' ctx e where γ' = γ { knLams = (x, s) : knLams γ }
-    go e@(EIte b e1 e2) = fastEvalIte γ ctx e
+    go e@(EIte _ _ _) = fastEvalIte γ ctx e
     go (ECoerc s t e)   = ECoerc s t  <$> go e
     go e@(EApp _ _)     = case splitEApp e of 
                            (f, es) -> do (f':es') <- mapM (fastEval γ ctx) (f:es) 
@@ -511,7 +511,7 @@ f <$$> xs = f Misc.<$$> xs
 
  
 evalApp :: Knowledge -> ICtx -> Expr -> (Expr, [Expr]) -> EvalST Expr
-evalApp γ ctx e (EVar f, es) 
+evalApp γ ctx _ (EVar f, es)
   | Just eq <- L.find ((== f) . eqName) (knAms γ)
   , length (eqArgs eq) <= length es 
   = do env <- seSort <$> gets evEnv
