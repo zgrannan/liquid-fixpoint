@@ -172,7 +172,7 @@ evalCandsLoop cfg ictx0 ctx γ env path ieBEnv = go ictx0
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
                   evalResults   <- SMT.smtBracket ctx "PLE.evaluate" $ do
                                SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx)) 
-                               mapM (evalOne γ env' ictx path ieBEnv) (S.toList cands)
+                               mapM (evalOne γ cfg env' ictx path ieBEnv) (S.toList cands)
                   let us = mconcat evalResults 
                   if S.null (us `S.difference` icEquals ictx)
                         then return ictx 
@@ -379,7 +379,7 @@ cached ref f x = do
   c'  <- readIORef ref
   case M.lookup x c' of
     Just r -> do
-      putStrLn "Cache Hit"
+      -- putStrLn "Cache Hit"
       return r
     Nothing -> do
       r <- f x
@@ -387,21 +387,34 @@ cached ref f x = do
       return r
       
 
-evalOne :: Knowledge -> EvalEnv -> ICtx -> Path -> BindEnv -> Expr -> IO EvAccum
-evalOne γ env ctx p ieBEnv e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
+evalOne :: Knowledge -> Config -> EvalEnv -> ICtx -> Path -> BindEnv -> Expr -> IO EvAccum
+evalOne γ cfg env ctx (Path p) ieBEnv e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
     -- (e',st) <- runStateT (fastEval γ ctx e)
+    pathCache <- filterM shouldInclude p
     (e', st) <- cached cache (\(ee, _) -> runStateT (fastEval γ ctx ee) env) (e, pathCache)
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
     where
-      pathCache = filterPath isRefined p
-      isRefined bindID = 
-        let (_, (RR _ (Reft (_, reft)))) = lookupBindEnv bindID ieBEnv
-        in reft /= PTrue
-        -- in if reft == PTrue then error "boom" else True
-        
-        
-evalOne γ env ctx _ _ e =
+      getReft bindID = unElab $ expr $ lookupBindEnv bindID ieBEnv
+      checkImp lhsID rhsID = do
+        r <- knPreds γ (knContext γ) (knLams γ) $ PImp (getReft lhsID) (getReft rhsID)
+        when r $ printf "Implication: %d implies %d\n" lhsID rhsID
+        return r
+      shouldInclude bindID | isTautoPred (getReft bindID)  = return False
+      shouldInclude bindID = do
+        taut <- knPreds γ (knContext γ) (knLams γ) (getReft bindID)
+        if taut
+          then return False
+          else return False-- not <$> anyM (\other -> checkImp other bindID) (takeWhile (/= bindID) p)
+
+
+evalOne γ cfg env ctx _ _ e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
+
+anyM :: (a -> IO Bool) -> [a] -> IO Bool
+anyM f []     = return False
+anyM f (x:xs) = do
+  r <- f x
+  if r then return True else anyM f xs
 
 notGuardedApps :: Expr -> [Expr]
 notGuardedApps = go 
