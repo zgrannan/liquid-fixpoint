@@ -116,7 +116,6 @@ import           Language.Fixpoint.Types.Spans
 import           Language.Fixpoint.Types.Sorts
 import           Language.Fixpoint.Misc
 import           Text.PrettyPrint.HughesPJ.Compat
-import           Debug.Trace (trace)
 
 -- import           Text.Printf               (printf)
 
