@@ -102,7 +102,7 @@ import           Data.Generics             (Data)
 import           Data.Typeable             (Typeable)
 import           Data.Hashable
 import           GHC.Generics              (Generic)
-import           Data.List                 (foldl', partition)
+import           Data.List                 (foldl', partition, nub)
 import           Data.String
 import           Data.Text                 (Text)
 import qualified Data.Text                 as T
@@ -450,17 +450,29 @@ instance Fixpoint Expr where
     | otherwise           = PGrad k su i (simplify e)
 
   simplify (PAnd ps)
-    | any isContraPred ps = PFalse
-    | otherwise           = PAnd $ filter (not . isTautoPred) $ map simplify ps
+    | any isContraPred (expandAnd ps) = PFalse
+    | otherwise                       = PAnd $ nub $ filter (not . isTautoPred) $ map simplify (expandAnd ps)
 
   simplify (POr  ps)
-    | any isTautoPred ps = PTrue
-    | otherwise          = POr  $ filter (not . isContraPred) $ map simplify ps
+    | any isTautoPred (expandOr ps) = PTrue
+    | otherwise                     = POr  $ nub $ filter (not . isContraPred) $ map simplify (expandOr ps)
 
   simplify p
     | isContraPred p     = PFalse
     | isTautoPred  p     = PTrue
     | otherwise          = p
+
+expandAnd :: [Expr] -> [Expr]
+expandAnd = expandAnd' [] where
+  expandAnd' buff []           = reverse buff
+  expandAnd' buff (PAnd xs:ys) = expandAnd' buff $ xs ++ ys
+  expandAnd' buff (x:ys)       = expandAnd' (x:buff) ys
+
+expandOr :: [Expr] -> [Expr]
+expandOr = expandOr' [] where
+  expandOr' buff []          = reverse buff
+  expandOr' buff (POr xs:ys) = expandOr' buff $ xs ++ ys
+  expandOr' buff (x:ys)      = expandOr' (x:buff) ys
 
 isContraPred   :: Expr -> Bool
 isContraPred z = eqC z || (z `elem` contras)
