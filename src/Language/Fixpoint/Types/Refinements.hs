@@ -103,7 +103,7 @@ import           Data.Generics             (Data)
 import           Data.Typeable             (Typeable)
 import           Data.Hashable
 import           GHC.Generics              (Generic)
-import           Data.List                 (foldl', partition, nub)
+import           Data.List                 (foldl', partition)
 import           Data.String
 import           Data.Text                 (Text)
 import qualified Data.Text                 as T
@@ -480,11 +480,11 @@ simplifyExpr (PGrad k su i e)
 
 simplifyExpr (PAnd ps)
   | any isContraPred ps = PFalse
-  | otherwise           = PAnd $ nub $ filter (not . isTautoPred) $ map simplifyExpr ps
+  | otherwise           = PAnd $ filter (not . isTautoPred) $ map simplifyExpr ps
 
 simplifyExpr (POr  ps)
   | any isTautoPred ps = PTrue
-  | otherwise          = POr  $ nub $ filter (not . isContraPred) $ map simplifyExpr ps
+  | otherwise          = POr $ filter (not . isContraPred) $ map simplifyExpr ps
 
 simplifyExpr p
   | isContraPred p     = PFalse
