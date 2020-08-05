@@ -102,7 +102,7 @@ import           Data.Generics             (Data)
 import           Data.Typeable             (Typeable)
 import           Data.Hashable
 import           GHC.Generics              (Generic)
-import           Data.List                 (foldl', partition)
+import           Data.List                 (foldl', partition, nub)
 import           Data.String
 import           Data.Text                 (Text)
 import qualified Data.Text                 as T
@@ -115,6 +115,7 @@ import           Language.Fixpoint.Types.Spans
 import           Language.Fixpoint.Types.Sorts
 import           Language.Fixpoint.Misc
 import           Text.PrettyPrint.HughesPJ.Compat
+import           Debug.Trace (trace)
 
 -- import           Text.Printf               (printf)
 
@@ -440,6 +441,32 @@ instance Fixpoint Expr where
   toFix (ECoerc a t e)   = parens (text "coerce" <+> toFix a <+> text "~" <+> toFix t <+> text "in" <+> toFix e)
   toFix (ELam (x,s) e)   = text "lam" <+> toFix x <+> ":" <+> toFix s <+> "." <+> toFix e
 
+  simplify (PAtom Eq lhs rhs) =
+    let
+      lhs' = simplify lhs
+      rhs' = simplify rhs
+      e'   = PAtom Eq lhs' rhs'
+    in
+      if isContraPred e'
+      then PFalse
+      else if isTautoPred e'
+      then PTrue
+      else e'
+
+  simplify (EApp lhs rhs) = EApp (simplify lhs) (simplify rhs)
+  simplify (EBin bop e1 e2) =
+    let
+      e1' = simplify e1
+      e2' = simplify e2
+    in
+      case (e1', e2') of
+        ((ECon (I left)), (ECon (I right))) ->
+          case bop of
+            Minus -> ECon $ I $ left - right
+            Plus  -> ECon $ I $ left + right
+            _     -> EBin bop e1' e2'
+        _ -> EBin bop e1' e2'
+  
   simplify (PAnd [])     = PTrue
   simplify (POr  [])     = PFalse
   simplify (PAnd [p])    = simplify p
@@ -451,11 +478,11 @@ instance Fixpoint Expr where
 
   simplify (PAnd ps)
     | any isContraPred ps = PFalse
-    | otherwise           = PAnd $ filter (not . isTautoPred) $ map simplify ps
+    | otherwise           = PAnd $ nub $ filter (not . isTautoPred) $ map simplify ps
 
   simplify (POr  ps)
     | any isTautoPred ps = PTrue
-    | otherwise          = POr  $ filter (not . isContraPred) $ map simplify ps
+    | otherwise          = POr  $ nub $ filter (not . isContraPred) $ map simplify ps
 
   simplify p
     | isContraPred p     = PFalse
