@@ -385,27 +385,24 @@ cached ref f x = do
       r <- f x
       writeIORef ref (M.insert x r c')
       return r
-      
+
+isSubsetOf x y = (x `S.union` y) == y
 
 evalOne :: Knowledge -> Config -> EvalEnv -> ICtx -> Path -> BindEnv -> Expr -> IO EvAccum
 evalOne γ cfg env ctx (Path p) ieBEnv e | null $ getAutoRws γ ctx = do -- time ("Eval " ++ show e) $ do
     -- (e',st) <- runStateT (fastEval γ ctx e)
-    pathCache <- filterM shouldInclude p
+    let pathCache = filter shouldInclude p
     (e', st) <- cached cache (\(ee, _) -> runStateT (fastEval γ ctx ee) env) (e, pathCache)
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
     where
       getReft bindID = unElab $ expr $ lookupBindEnv bindID ieBEnv
-      checkImp lhsID rhsID = do
-        r <- knPreds γ (knContext γ) (knLams γ) $ PImp (getReft lhsID) (getReft rhsID)
-        when r $ printf "Implication: %d implies %d\n" lhsID rhsID
-        return r
-      shouldInclude bindID | isTautoPred (getReft bindID)  = return False
-      shouldInclude bindID = do
-        taut <- knPreds γ (knContext γ) (knLams γ) (getReft bindID)
-        if taut
-          then return False
-          else return False-- not <$> anyM (\other -> checkImp other bindID) (takeWhile (/= bindID) p)
-
+      checkImp lhsID rhsID | (PAnd lhs, PAnd rhs) <- (getReft lhsID, getReft rhsID) =
+         (S.fromList rhs) `isSubsetOf` (S.fromList lhs)
+      checkImp _ _  = False
+      shouldInclude bindID | isTautoPred (getReft bindID) = False
+      shouldInclude bindID | (Just otherID) <- L.find (\other -> checkImp other bindID) (takeWhile (/= bindID) (reverse p))
+                           = False -- trace (printf "Implication %d -> %d\n%s -> %s\n" otherID bindID (showpp $ getReft otherID) (showpp $ getReft bindID)) False
+      shouldInclude _      = True                           
 
 evalOne γ cfg env ctx _ _ e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
