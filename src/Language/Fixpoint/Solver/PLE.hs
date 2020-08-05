@@ -728,7 +728,8 @@ class Simplifiable a where
 
 
 instance Simplifiable Expr where
-  simplify γ ictx e = mytracepp ("simplification of " ++ showpp e) $ fix (Vis.mapExpr tx) e 
+  simplify γ ictx e =
+    mytracepp ("simplification of " ++ showpp e) $ fix (Vis.mapExpr tx) (simplifyExpr e)
     where 
       fix f e = if e == e' then e else fix f e' where e' = f e 
       tx e 

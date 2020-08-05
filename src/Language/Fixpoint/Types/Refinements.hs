@@ -94,6 +94,7 @@ module Language.Fixpoint.Types.Refinements (
   , HasGradual (..)
   , srcGradInfo
 
+  , simplifyExpr
   ) where
 
 import           Prelude hiding ((<>))
@@ -440,54 +441,56 @@ instance Fixpoint Expr where
   toFix (PGrad k _ _ e)  = toFix e <+> text "&&" <+> toFix k -- text "??" -- <+> toFix k <+> toFix su
   toFix (ECoerc a t e)   = parens (text "coerce" <+> toFix a <+> text "~" <+> toFix t <+> text "in" <+> toFix e)
   toFix (ELam (x,s) e)   = text "lam" <+> toFix x <+> ":" <+> toFix s <+> "." <+> toFix e
+  simplify = simplifyExpr
 
-  simplify (PAtom Eq lhs rhs) =
-    let
-      lhs' = simplify lhs
-      rhs' = simplify rhs
-      e'   = PAtom Eq lhs' rhs'
-    in
-      if isContraPred e'
-      then PFalse
-      else if isTautoPred e'
-      then PTrue
-      else e'
+simplifyExpr :: Expr -> Expr
+simplifyExpr (PAtom Eq lhs rhs) =
+  let
+    lhs' = simplifyExpr lhs
+    rhs' = simplifyExpr rhs
+    e'   = PAtom Eq lhs' rhs'
+  in
+    if isContraPred e'
+    then PFalse
+    else if isTautoPred e'
+    then PTrue
+    else e'
 
-  simplify (EApp lhs rhs) = EApp (simplify lhs) (simplify rhs)
-  simplify (EBin bop e1 e2) =
-    let
-      e1' = simplify e1
-      e2' = simplify e2
-    in
-      case (e1', e2') of
-        ((ECon (I left)), (ECon (I right))) ->
-          case bop of
-            Minus -> ECon $ I $ left - right
-            Plus  -> ECon $ I $ left + right
-            _     -> EBin bop e1' e2'
-        _ -> EBin bop e1' e2'
-  
-  simplify (PAnd [])     = PTrue
-  simplify (POr  [])     = PFalse
-  simplify (PAnd [p])    = simplify p
-  simplify (POr  [p])    = simplify p
+simplifyExpr (EApp lhs rhs) = EApp (simplifyExpr lhs) (simplifyExpr rhs)
+simplifyExpr (EBin bop e1 e2) =
+  let
+    e1' = simplifyExpr e1
+    e2' = simplifyExpr e2
+  in
+    case (e1', e2') of
+      ((ECon (I left)), (ECon (I right))) ->
+        case bop of
+          Minus -> ECon $ I $ left - right
+          Plus  -> ECon $ I $ left + right
+          _     -> EBin bop e1' e2'
+      _ -> EBin bop e1' e2'
 
-  simplify (PGrad k su i e)
-    | isContraPred e      = PFalse
-    | otherwise           = PGrad k su i (simplify e)
+simplifyExpr (PAnd [])     = PTrue
+simplifyExpr (POr  [])     = PFalse
+simplifyExpr (PAnd [p])    = simplifyExpr p
+simplifyExpr (POr  [p])    = simplifyExpr p
 
-  simplify (PAnd ps)
-    | any isContraPred ps = PFalse
-    | otherwise           = PAnd $ nub $ filter (not . isTautoPred) $ map simplify ps
+simplifyExpr (PGrad k su i e)
+  | isContraPred e      = PFalse
+  | otherwise           = PGrad k su i (simplifyExpr e)
 
-  simplify (POr  ps)
-    | any isTautoPred ps = PTrue
-    | otherwise          = POr  $ nub $ filter (not . isContraPred) $ map simplify ps
+simplifyExpr (PAnd ps)
+  | any isContraPred ps = PFalse
+  | otherwise           = PAnd $ nub $ filter (not . isTautoPred) $ map simplifyExpr ps
 
-  simplify p
-    | isContraPred p     = PFalse
-    | isTautoPred  p     = PTrue
-    | otherwise          = p
+simplifyExpr (POr  ps)
+  | any isTautoPred ps = PTrue
+  | otherwise          = POr  $ nub $ filter (not . isContraPred) $ map simplifyExpr ps
+
+simplifyExpr p
+  | isContraPred p     = PFalse
+  | isTautoPred  p     = PTrue
+  | otherwise          = p
 
 isContraPred   :: Expr -> Bool
 isContraPred z = eqC z || (z `elem` contras)
