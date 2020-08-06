@@ -443,7 +443,13 @@ instance Fixpoint Expr where
   simplify = simplifyExpr
 
 simplifyExpr :: Expr -> Expr
-simplifyExpr (PAtom Eq lhs rhs) =
+simplifyExpr (PNot (PNot e)) = simplifyExpr e
+simplifyExpr (PNot e)
+  | isContraPred e = PTrue
+  | isTautoPred  e = PFalse
+  | otherwise      = PNot $ simplifyExpr e
+  
+simplifyExpr (PAtom eq lhs rhs) | isEq eq =
   let
     lhs' = simplifyExpr lhs
     rhs' = simplifyExpr rhs
@@ -455,6 +461,12 @@ simplifyExpr (PAtom Eq lhs rhs) =
     then PTrue
     else e'
 
+simplifyExpr (EIte b e1 e2) 
+  | isTautoPred (simplifyExpr b)  = simplifyExpr e1 
+  | isContraPred (simplifyExpr b) = simplifyExpr e2
+  | otherwise
+  = EIte (simplifyExpr b) (simplifyExpr e1) (simplifyExpr e2)
+    
 simplifyExpr (EApp lhs rhs) = EApp (simplifyExpr lhs) (simplifyExpr rhs)
 simplifyExpr (EBin bop e1 e2) =
   let
@@ -479,11 +491,13 @@ simplifyExpr (PGrad k su i e)
   | otherwise           = PGrad k su i (simplifyExpr e)
 
 simplifyExpr (PAnd ps)
-  | any isContraPred ps = PFalse
+  | any isContraPred (map simplifyExpr ps)
+  = PFalse
   | otherwise           = PAnd $ filter (not . isTautoPred) $ map simplifyExpr ps
 
 simplifyExpr (POr  ps)
-  | any isTautoPred ps = PTrue
+  | any isTautoPred (map simplifyExpr ps)
+  = PTrue
   | otherwise          = POr $ filter (not . isContraPred) $ map simplifyExpr ps
 
 simplifyExpr p

@@ -729,7 +729,7 @@ class Simplifiable a where
 
 instance Simplifiable Expr where
   simplify γ ictx e =
-    mytracepp ("simplification of " ++ showpp e) $ fix (Vis.mapExpr tx) (simplifyExpr e)
+    mytracepp ("simplification of " ++ showpp e) $ fix (Vis.mapExpr tx) e
     where 
       fix f e = if e == e' then e else fix f e' where e' = f e 
       tx e 
@@ -740,9 +740,6 @@ instance Simplifiable Expr where
         , (EVar dc', _) <- splitEApp a
         , dc == dc' 
         = c
-      tx (EIte b e1 e2)
-        | isTautoPred b  = e1 
-        | isContraPred b = e2
       tx (ECoerc s t e)
         | s == t = e 
       tx (EApp (EVar f) a)
@@ -750,7 +747,7 @@ instance Simplifiable Expr where
         , (EVar dc', es) <- splitEApp a
         , dc == dc' 
         = es!!i
-      tx e = e  
+      tx e = simplifyExpr e  
 
 
 
