@@ -39,6 +39,7 @@ import qualified Data.HashMap.Strict  as M
 import qualified Data.HashSet         as S
 import qualified Data.List            as L
 import qualified Data.Maybe           as Mb
+import           Data.Text (splitOn, unpack)
 import           Debug.Trace          (trace)
 
 mytracepp :: (PPrint a) => String -> a -> a
@@ -78,7 +79,7 @@ instEnv cfg fi cs ctx = InstEnv cfg ctx bEnv aEnv cs γ s0
     bEnv              = bs fi
     aEnv              = ae fi
     γ                 = knowledge cfg ctx fi  
-    s0                = EvalEnv (SMT.ctxSymEnv ctx) mempty
+    s0                = EvalEnv (SMT.ctxSymEnv ctx) mempty mempty
 
 ---------------------------------------------------------------------------------------------- 
 -- | Step 1b: @mkCTrie@ builds the @Trie@ of constraints indexed by their environments 
@@ -328,10 +329,17 @@ isPleCstr aenv sid c = isTarget c && M.lookupDefault False sid (aenvExpand aenv)
 
 type EvAccum = S.HashSet (Expr, Expr)
 
+type Facts  = S.HashSet (Expr, Expr)
+
+insertFact :: Expr -> Expr -> Facts -> Facts
+insertFact e@(EEq (ECon _) (ECon _)) _ f = f -- error (show e)
+insertFact e e'                        f = S.insert (e, e') f
+
 --------------------------------------------------------------------------------
 data EvalEnv = EvalEnv
   { evEnv      :: !SymEnv
   , evAccum    :: EvAccum
+  , evFacts    :: Facts
   }
 
 type EvalST a = StateT EvalEnv IO a
@@ -344,9 +352,35 @@ getAutoRws γ ctx =
     cid <- icSubcId ctx
     M.lookup cid $ knAutoRWs γ
 
+dsParens e@(EApp _ _) = "(" ++ desugar e ++ ")"
+dsParens e            = desugar e
+
+desugar :: Expr -> String
+desugar (EApp (EVar f) x )
+  | Just c <- stripPrefix "lqdc##$select##" f
+  = let [name, index] = splitOn "##" (symbolText c)
+    in "case " ++ dsParens x ++ " of {" ++ unpack name ++ " x -> x }"
+desugar (EApp (EVar f) x)  | Just test <- unTestSymbol f =
+  "case " ++ dsParens x ++ " of { " ++ (symbolString test) ++ "{} -> True ; _ -> False }"
+desugar e@(EApp _ _) =
+  let (f, args) = splitEApp e
+  in L.intercalate " " (desugar f : map dsParens args)
+desugar (EVar x)           = symbolString x
+desugar (ECon (I c))       = show c
+desugar PFalse             = "False"
+desugar PTrue              = "True"
+-- desugar (PAtom Eq lhs rhs) = desugar lhs ++ " == " ++ desugar rhs
+desugar e                  = error (show e)
+
+generateEqs :: [(Expr, Expr)] -> String
+generateEqs facts = L.intercalate " ?\n" (map toEq facts)
+  where
+    toEq (lhs, rhs) = "(" ++ desugar lhs ++ " === " ++ desugar rhs ++ ")"
+  
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
 evalOne γ env ctx e | null $ getAutoRws γ ctx = do
-    (e',st) <- runStateT (fastEval γ ctx e) env 
+    (e',st) <- runStateT (fastEval γ ctx e) env
+    liftIO $ putStrLn (generateEqs (S.toList (evFacts st)))
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
 evalOne γ env ctx e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
@@ -397,7 +431,9 @@ fastEval γ ctx e =
         _ -> do
           e'  <- simplify γ ctx <$> go e
           if e /= e'
-            then do modify (\st -> st { evAccum = S.insert (traceE (e, e')) (evAccum st)
+            then do
+                    modify (\st -> st { evAccum = S.insert (traceE (e, e')) (evAccum st)
+                                      , evFacts = insertFact e e' (evFacts st)
                                       })
                     fastEval γ (addConst (e,e') ctx) e'
             else return e
@@ -736,6 +772,7 @@ instance Simplifiable Expr where
         | Just e' <- M.lookup e (icSimpl ictx)
         = e' 
       tx (EBin bop e1 e2) = applyConstantFolding bop e1 e2
+      tx (EEq (ECon x) (ECon y)) = if x == y then PTrue else PFalse
       tx (EApp (EVar f) a)
         | Just (dc, c)  <- L.lookup f (knConsts γ) 
         , (EVar dc', _) <- splitEApp a
