@@ -81,6 +81,7 @@ module Language.Fixpoint.Types.Names (
 
   -- * Unwrapping Symbols
   , unLitSymbol
+  , unTestSymbol
 
   -- * Hardwired global names
   , dummyName
@@ -427,6 +428,9 @@ testSymbol s = testPrefix `mappendSym` s
 
 isTestSymbol :: Symbol -> Bool
 isTestSymbol = isPrefixOfSym testPrefix
+
+unTestSymbol :: Symbol -> Maybe Symbol
+unTestSymbol = stripPrefix testPrefix
 
 litSymbol :: Symbol -> Symbol
 litSymbol s = litPrefix `mappendSym` s
