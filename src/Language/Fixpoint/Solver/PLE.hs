@@ -365,21 +365,28 @@ dsParens e@(EApp _ _) = "(" ++ desugar e ++ ")"
 dsParens e            = desugar e
 
 simplify' :: Expr -> Expr
-simplify' (EApp (EVar f) arg)
-  | Just c <- stripPrefix "lqdc##$select##" f
-  , [name, index] <- splitOn "##" (symbolText c)
-  , (EVar g, args) <- splitEApp arg
+simplify' e
+  | ((EVar f), [arg]) <- splitEApp e
+  , Just c            <- stripPrefix "lqdc##$select##" f
+  , [name, index]     <- splitOn "##" (symbolText c)
+  , (EVar g, args)    <- splitEApp arg
   , name == symbolText g
-  = args !! (((read . unpack) index) - 1)
-simplify' e = e   
+  = simplify' (args !! (((read . unpack) index) - 1))
+  
+simplify' e@(EApp{}) =
+  let
+    (f, args) = splitEApp e
+    f'        = simplify' f
+    args'     = map simplify' args
+    e'        = eApps f' args'
+  in
+    if e /= e'
+    then simplify' e'
+    else e
+    
+simplify' e = e
 
 desugar :: Expr -> String
-desugar (EApp (EVar f) arg)
-  | Just c <- stripPrefix "lqdc##$select##" f
-  , [name, index] <- splitOn "##" (symbolText c)
-  , (EVar g, args) <- splitEApp arg
-  , name == symbolText g
-  = desugar (args !! (((read . unpack) index) - 1))
 desugar (EApp (EVar f) x )
   | Just c <- stripPrefix "lqdc##$select##" f
   = let [name, index] = splitOn "##" (symbolText c)
@@ -397,7 +404,7 @@ desugar PTrue              = "True"
 desugar e                  = error (show e)
 
 uselessPatternMatch :: Knowledge -> Expr -> Bool
-uselessPatternMatch γ (EApp (EVar f) (EApp (EVar g) _)) =
+uselessPatternMatch γ (EApp (EVar f) arg) | (EVar g, _) <- splitEApp arg =
   isTestSymbol f && S.member g (knDCs γ)
 uselessPatternMatch _ _ = False
 
@@ -407,7 +414,7 @@ generateEqs γ facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFacts))
     both f (x,y)      = (f x, f y)
     simplified        = S.map (both simplify') facts
     usefulFacts       = S.filter canUse simplified
-    canUse (lhs, rhs) = not (uselessPatternMatch γ lhs || uselessPatternMatch γ lhs || lhs == rhs)
+    canUse (lhs, rhs) = not (uselessPatternMatch γ lhs || uselessPatternMatch γ rhs || lhs == rhs)
     toEq (lhs, rhs)   = "(" ++ desugar lhs ++ " === " ++ desugar rhs ++ ")"
 
 type EvalOneResult = (Facts, EvAccum)
