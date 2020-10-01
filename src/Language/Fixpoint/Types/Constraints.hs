@@ -871,6 +871,7 @@ data AxiomEnv = AEnv
   , aenvSimpl    :: ![Rewrite]
   , aenvExpand   :: M.HashMap SubcId Bool
   , aenvAutoRW   :: M.HashMap SubcId [AutoRewrite]
+  , aenvShowProofs :: S.HashSet SubcId
   } deriving (Eq, Show, Generic)
 
 instance B.Binary AutoRewrite
@@ -887,15 +888,16 @@ instance NFData SMTSolver
 instance NFData Eliminate
 
 instance Semigroup AxiomEnv where
-  a1 <> a2        = AEnv aenvEqs' aenvSimpl' aenvExpand' aenvAutoRW'
+  a1 <> a2        = AEnv aenvEqs' aenvSimpl' aenvExpand' aenvAutoRW' aenvShowProofs'
     where
       aenvEqs'    = (aenvEqs a1)    <> (aenvEqs a2)
       aenvSimpl'  = (aenvSimpl a1)  <> (aenvSimpl a2)
       aenvExpand' = (aenvExpand a1) <> (aenvExpand a2)
       aenvAutoRW' = (aenvAutoRW a1) <> (aenvAutoRW a2)
+      aenvShowProofs' = (aenvShowProofs a1) <> (aenvShowProofs a2)
 
 instance Monoid AxiomEnv where
-  mempty          = AEnv [] [] (M.fromList []) (M.fromList [])
+  mempty          = AEnv [] [] (M.fromList []) (M.fromList []) (S.fromList [])
   mappend         = (<>)
 
 instance PPrint AxiomEnv where

@@ -383,7 +383,10 @@ generateEqs facts = L.intercalate " ?\n" (map toEq facts)
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
 evalOne γ env ctx e | null $ getAutoRws γ ctx = do
     (e',st) <- runStateT (fastEval γ ctx e) env
-    liftIO $ putStrLn (generateEqs (S.toList (evFacts st)))
+    case icSubcId ctx of
+      Just cid | S.member cid (knShowProofs γ) ->
+        liftIO $ putStrLn (generateEqs (S.toList (evFacts st)))
+      _ -> return ()
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
 evalOne γ env ctx e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
@@ -664,6 +667,7 @@ data Knowledge = KN
   , knConsts            :: !(ConstDCMap)
   , knAutoRWs           :: M.HashMap SubcId [AutoRewrite]
   , knRWTerminationOpts :: RWTerminationOpts
+  , knShowProofs        :: S.HashSet SubcId
   }
 
 isValid :: Knowledge -> Expr -> IO Bool
@@ -690,6 +694,7 @@ knowledge cfg ctx si = KN
       if (rwTerminationCheck cfg)
       then RWTerminationCheckEnabled (maxRWOrderingConstraints cfg)
       else RWTerminationCheckDisabled
+  , knShowProofs = aenvShowProofs aenv
   } 
   where 
     sims = aenvSimpl aenv ++ concatMap reWriteDDecl (ddecls si) 

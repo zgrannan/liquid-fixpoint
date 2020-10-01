@@ -1279,6 +1279,7 @@ data Def a
   | Adt  !DataDecl
   | AutoRW !Int !AutoRewrite
   | RWMap ![(Int,Int)]
+  | ShowProof !Int
   deriving (Show, Generic)
   --  Sol of solbind
   --  Dep of FixConstraint.dep
@@ -1308,6 +1309,7 @@ defP =  Srt   <$> (reserved "sort"         >> colon >> sortP)
     <|> Adt    <$> (reserved "data"        >> dataDeclP)
     <|> AutoRW <$> (reserved "autorewrite" >> intP) <*> autoRewriteP
     <|> RWMap  <$> (reserved "rewrite"     >> pairsP intP intP)
+    <|> ShowProof  <$> (reserved "showProof"     >> intP)
 
 
 sortedReftP :: Parser SortedReft
@@ -1385,6 +1387,7 @@ defsFInfo defs = {-# SCC "defsFI" #-} FI cm ws bs ebs lts dts kts qs binfo adts 
     eqs        =                    [e                  | Def e       <- defs]
     rews       =                    [r                  | Mat r       <- defs]
     autoRWs    = M.fromList         [(arId , s)         | AutoRW arId s <- defs]
+    showProofs = S.fromList         [fromIntegral i     | ShowProof i <- defs]
     rwEntries  =                    [(i, f)             | RWMap fs   <- defs, (i,f) <- fs]
     rwMap      = foldl insert (M.fromList []) rwEntries
                  where
@@ -1395,7 +1398,7 @@ defsFInfo defs = {-# SCC "defsFI" #-} FI cm ws bs ebs lts dts kts qs binfo adts 
                        Nothing ->
                          map
     cid        = fromJust . sid
-    ae         = AEnv eqs rews expand rwMap
+    ae         = AEnv eqs rews expand rwMap showProofs
     adts       =                    [d                  | Adt d       <- defs]
     -- msg    = show $ "#Lits = " ++ (show $ length consts)
 
