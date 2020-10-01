@@ -138,7 +138,7 @@ evalToSMT :: String -> Config -> SMT.Context -> (Expr, Expr) -> Pred
 evalToSMT msg cfg ctx (e1,e2) = toSMT ("evalToSMT:" ++ msg) cfg ctx [] (EEq e1 e2)
 
 evalCandsLoop :: Config -> ICtx -> SMT.Context -> Knowledge -> EvalEnv -> IO ICtx 
-evalCandsLoop cfg ictx0 ctx γ env = go ictx0 
+evalCandsLoop cfg ictx0 ctx γ env = go mempty ictx0 
   where
     withRewrites exprs =
       let
@@ -146,15 +146,21 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
                             ,  e <- S.toList (snd `S.map` exprs)]
       in 
         exprs <> (S.fromList $ concat rws)
-    go ictx | S.null (icCands ictx) = return ictx 
-    go ictx =  do let cands = icCands ictx
+    showProof facts = 
+      case icSubcId ictx0 of
+        Just cid | S.member cid (knShowProofs γ) ->
+          liftIO $ putStrLn (generateEqs γ facts)
+        _ -> return ()
+    go facts ictx | S.null (icCands ictx) = showProof facts >> return ictx 
+    go facts ictx = do
+                  let cands = icCands ictx
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
-                  evalResults   <- SMT.smtBracket ctx "PLE.evaluate" $ do
+                  evalResults <- SMT.smtBracket ctx "PLE.evaluate" $ do
                                SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx)) 
                                mapM (evalOne γ env' ictx) (S.toList cands)
-                  let us = mconcat evalResults 
+                  let (facts', us) = mconcat evalResults 
                   if S.null (us `S.difference` icEquals ictx)
-                        then return ictx 
+                        then showProof facts >> return ictx 
                         else do  let oks      = fst `S.map` us
                                  let us'      = withRewrites us 
                                  let eqsSMT   = evalToSMT "evalCandsLoop" cfg ctx `S.map` us'
@@ -162,7 +168,7 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
                                                      , icEquals = icEquals ictx <> us'
                                                      , icAssms  = icAssms  ictx <> S.filter (not . isTautoPred) eqsSMT }
                                  let newcands = mconcat (makeCandidates γ ictx' <$> S.toList (cands <> (snd `S.map` us)))
-                                 go (ictx' { icCands = S.fromList newcands})
+                                 go (S.union facts facts') (ictx' { icCands = S.fromList newcands})
                                  
 
 
@@ -358,7 +364,22 @@ getAutoRws γ ctx =
 dsParens e@(EApp _ _) = "(" ++ desugar e ++ ")"
 dsParens e            = desugar e
 
+simplify' :: Expr -> Expr
+simplify' (EApp (EVar f) arg)
+  | Just c <- stripPrefix "lqdc##$select##" f
+  , [name, index] <- splitOn "##" (symbolText c)
+  , (EVar g, args) <- splitEApp arg
+  , name == symbolText g
+  = args !! (((read . unpack) index) - 1)
+simplify' e = e   
+
 desugar :: Expr -> String
+desugar (EApp (EVar f) arg)
+  | Just c <- stripPrefix "lqdc##$select##" f
+  , [name, index] <- splitOn "##" (symbolText c)
+  , (EVar g, args) <- splitEApp arg
+  , name == symbolText g
+  = desugar (args !! (((read . unpack) index) - 1))
 desugar (EApp (EVar f) x )
   | Just c <- stripPrefix "lqdc##$select##" f
   = let [name, index] = splitOn "##" (symbolText c)
@@ -375,21 +396,29 @@ desugar PTrue              = "True"
 -- desugar (PAtom Eq lhs rhs) = desugar lhs ++ " == " ++ desugar rhs
 desugar e                  = error (show e)
 
-generateEqs :: [(Expr, Expr)] -> String
-generateEqs facts = L.intercalate " ?\n" (map toEq facts)
+uselessPatternMatch :: Knowledge -> Expr -> Bool
+uselessPatternMatch γ (EApp (EVar f) (EApp (EVar g) _)) =
+  isTestSymbol f && S.member g (knDCs γ)
+uselessPatternMatch _ _ = False
+
+generateEqs :: Knowledge -> Facts -> String
+generateEqs γ facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFacts))
   where
-    toEq (lhs, rhs) = "(" ++ desugar lhs ++ " === " ++ desugar rhs ++ ")"
+    both f (x,y)      = (f x, f y)
+    simplified        = S.map (both simplify') facts
+    usefulFacts       = S.filter canUse simplified
+    canUse (lhs, rhs) = not (uselessPatternMatch γ lhs || uselessPatternMatch γ lhs || lhs == rhs)
+    toEq (lhs, rhs)   = "(" ++ desugar lhs ++ " === " ++ desugar rhs ++ ")"
+
+type EvalOneResult = (Facts, EvAccum)
   
-evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
+evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvalOneResult
 evalOne γ env ctx e | null $ getAutoRws γ ctx = do
     (e',st) <- runStateT (fastEval γ ctx e) env
-    case icSubcId ctx of
-      Just cid | S.member cid (knShowProofs γ) ->
-        liftIO $ putStrLn (generateEqs (S.toList (evFacts st)))
-      _ -> return ()
-    return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
-evalOne γ env ctx e =
-  evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
+    return $ (evFacts st, if e' == e then evAccum st else S.insert (e, e') (evAccum st))
+evalOne γ env ctx e = do
+  result <- execStateT (eval γ ctx [(e, PLE)]) env
+  return (evFacts result, evAccum result)
 
 notGuardedApps :: Expr -> [Expr]
 notGuardedApps = go 
