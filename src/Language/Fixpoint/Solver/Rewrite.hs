@@ -198,7 +198,6 @@ data RewriteArgs = RWArgs
 getRewrite :: RewriteArgs -> [(Expr, TermOrigin)] -> SubExpr -> AutoRewrite -> MaybeT IO (Expr, TermOrigin)
 getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
   do
-    trace "????" $ if "accept_team" `L.isInfixOf` (show expr) then lift (putStrLn "hi") else lift (putStrLn "bi")
     su <- MaybeT $ return $ unify freeVars lhs subE
     let subE' = subst su rhs
     let expr' = toE subE'
@@ -209,14 +208,12 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
       RWTerminationCheckEnabled maxConstraints ->
         case diverges maxConstraints termPath (convert expr') of
           NotDiverging opOrdering  ->
-            trace "RW" $ return (expr', RW opOrdering)
+            return (expr', RW opOrdering)
           Diverging ->
             mzero
-      RWTerminationCheckDisabled -> trace "RW" $ return (expr', RW [])
+      RWTerminationCheckDisabled -> return (expr', RW [])
   where
 
-    expr = toE subE
-    
     convert (EIte i t e) = Term "$ite" $ map convert [i,t,e]
     convert (EApp (EVar s) (EVar var))
       | dcPrefix `isPrefixOfSym` s

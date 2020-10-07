@@ -93,7 +93,7 @@ mkCTrie ics  = T.fromList [ (cBinds c, i) | (i, c) <- ics ]
 ---------------------------------------------------------------------------------------------- 
 -- | Step 2: @pleTrie@ walks over the @CTrie@ to actually do the incremental-PLE
 pleTrie :: CTrie -> InstEnv a -> IO InstRes
-pleTrie t env = putStrLn "pleTrie" >> loopT env ctx0 diff0 Nothing res0 t 
+pleTrie t env = loopT env ctx0 diff0 Nothing res0 t 
   where 
     diff0        = []
     res0         = M.empty 
@@ -130,7 +130,6 @@ withAssms env@(InstEnv {..}) ctx delta cidMb act = do
 -- | @ple1@ performs the PLE at a single "node" in the Trie 
 ple1 :: InstEnv a -> ICtx -> Maybe BindId -> InstRes -> IO (ICtx, InstRes)
 ple1 (InstEnv {..}) ctx i res =
-  putStrLn "ple1" >>
   updCtxRes res i <$> evalCandsLoop ieCfg ctx ieSMT ieKnowl ieEvEnv
 
 
@@ -317,10 +316,9 @@ isGoodApp :: Knowledge -> Expr -> Bool
 isGoodApp γ e 
   | (EVar f, es) <- splitEApp e
   , Just i       <- L.lookup f (knSummary γ)
-  , length es >= i
-  = trace ("Good App: " ++ show e) True
+  = length es >= i
   | otherwise
-  = trace ("Bad App: " ++ show e) False 
+  = False 
     
 
 
@@ -351,12 +349,10 @@ getAutoRws γ ctx =
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
 evalOne γ env ctx e | null $ getAutoRws γ ctx = do
-    putStrLn "!!!!"
-    (e',st) <- trace "NOTHING" (runStateT (fastEval γ ctx e) env)
+    (e',st) <- runStateT (fastEval γ ctx e) env
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
-evalOne γ env ctx e = do
-  putStrLn "!!!!"
-  trace "HIHI" (evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env)
+evalOne γ env ctx e =
+  evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
 
 notGuardedApps :: Expr -> [Expr]
 notGuardedApps = go 
@@ -441,7 +437,7 @@ eval _ ctx path
         
 eval γ ctx path =
   do
-    rws <- trace "OOOOOOO" getRWs
+    rws <- getRWs
     e'  <- simplify γ ctx <$> evalStep γ ctx e
     let evalIsNewExpr = L.notElem e' pathExprs
     let exprsToAdd    = (if evalIsNewExpr then [e'] else []) ++ map fst rws
@@ -465,7 +461,7 @@ eval γ ctx path =
           in if ee == ee' then ee else subst' ee'
         rwArgs = RWArgs (isValid γ) (knRWTerminationOpts γ)
         getRWs' s = 
-          trace "!!!!" (Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrite rwArgs path s) autorws)
+          Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrite rwArgs path s) autorws
       in concat <$> mapM getRWs' (subExprs e')
           
     addConst (e,e') = if isConstant (knDCs γ) e'
@@ -642,7 +638,7 @@ isValid γ e = do
     else knPreds γ (knContext γ) (knLams γ) e
 
 knowledge :: Config -> SMT.Context -> SInfo a -> Knowledge
-knowledge cfg ctx si = trace (show $ gLits si) $ KN 
+knowledge cfg ctx si = KN 
   { knSims                     = sims 
   , knAms                      = aenvEqs aenv
   , knContext                  = ctx 
@@ -664,7 +660,10 @@ knowledge cfg ctx si = trace (show $ gLits si) $ KN
 
     lits = map toSum (toListSEnv (gLits si))
       where
-        toSum (sym, sort) = (sym, 3)
+        toSum (sym, sort)      = (sym, getArity sort)
+        
+        getArity (FFunc _ rhs) = 1 + getArity rhs
+        getArity _             = 0
     
     sims = aenvSimpl aenv ++ concatMap reWriteDDecl (ddecls si) 
     aenv = ae si 
