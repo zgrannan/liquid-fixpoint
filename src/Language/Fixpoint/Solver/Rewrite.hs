@@ -22,6 +22,7 @@ import qualified Data.List            as L
 import qualified Data.Maybe           as Mb
 import           Language.Fixpoint.Types hiding (simplify)
 import qualified Data.Text as TX
+import Debug.Trace (trace)
 
 type Op = Symbol
 type OpOrdering = [Symbol]
@@ -197,6 +198,7 @@ data RewriteArgs = RWArgs
 getRewrite :: RewriteArgs -> [(Expr, TermOrigin)] -> SubExpr -> AutoRewrite -> MaybeT IO (Expr, TermOrigin)
 getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
   do
+    trace "????" $ if "accept_team" `L.isInfixOf` (show expr) then lift (putStrLn "hi") else lift (putStrLn "bi")
     su <- MaybeT $ return $ unify freeVars lhs subE
     let subE' = subst su rhs
     let expr' = toE subE'
@@ -207,11 +209,13 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
       RWTerminationCheckEnabled maxConstraints ->
         case diverges maxConstraints termPath (convert expr') of
           NotDiverging opOrdering  ->
-            return (expr', RW opOrdering)
+            trace "RW" $ return (expr', RW opOrdering)
           Diverging ->
             mzero
-      RWTerminationCheckDisabled -> return (expr', RW [])
+      RWTerminationCheckDisabled -> trace "RW" $ return (expr', RW [])
   where
+
+    expr = toE subE
     
     convert (EIte i t e) = Term "$ite" $ map convert [i,t,e]
     convert (EApp (EVar s) (EVar var))
@@ -298,7 +302,7 @@ unifyAll freeVars (template:xs) (seen:ys) =
     let ys' = map (subst rs) ys
     (Su s2) <- unifyAll (freeVars L.\\ M.keys s1) xs' ys'
     return $ Su (M.union s1 s2)
-unifyAll _ _ _ = undefined
+unifyAll _ _ _  = Nothing
 
 unify :: [Symbol] -> Expr -> Expr -> Maybe Subst
 unify _ template seenExpr | template == seenExpr = Just (Su M.empty)
