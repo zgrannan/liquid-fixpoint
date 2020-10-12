@@ -45,22 +45,19 @@ mytracepp :: (PPrint a) => String -> a -> a
 mytracepp = notracepp
 
 traceE :: (Expr,Expr) -> (Expr,Expr)
-traceE (e,e')
-  | isEnabled
-  , e /= e'
-  = trace ("\n" ++ showpp e ++ " ~> " ++ showpp e') (e,e')
-  | otherwise
+traceE (e,e') 
+  | False -- True 
+  , e /= e' 
+  = trace ("\n" ++ showpp e ++ " ~> " ++ showpp e') (e,e') 
+  | otherwise 
   = (e,e')
-  where
-    isEnabled :: Bool
-    isEnabled = False
 
 --------------------------------------------------------------------------------
 -- | Strengthen Constraint Environments via PLE 
 --------------------------------------------------------------------------------
-instantiate :: (Fixpoint a, Loc a) => Config -> SInfo a -> IO (SInfo a)
+instantiate :: (Loc a) => Config -> SInfo a -> IO (SInfo a)
 instantiate cfg fi' = do 
-    let cs = [ (i, c) | (i, c) <- M.toList (cm fi), isPleCstr aEnv i c ]
+    let cs = [ (i, c) | (i, c) <- M.toList (cm fi), isPleCstr aEnv i c ] 
     let t  = mkCTrie cs                                               -- 1. BUILD the Trie
     res   <- withProgress (1 + length cs) $ 
                withCtx cfg file sEnv (pleTrie t . instEnv cfg fi cs)  -- 2. TRAVERSE Trie to compute InstRes
@@ -129,7 +126,7 @@ withAssms env@(InstEnv {..}) ctx delta cidMb act = do
 
 -- | @ple1@ performs the PLE at a single "node" in the Trie 
 ple1 :: InstEnv a -> ICtx -> Maybe BindId -> InstRes -> IO (ICtx, InstRes)
-ple1 (InstEnv {..}) ctx i res =
+ple1 (InstEnv {..}) ctx i res = 
   updCtxRes res i <$> evalCandsLoop ieCfg ctx ieSMT ieKnowl ieEvEnv
 
 
@@ -349,7 +346,7 @@ getAutoRws γ ctx =
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
 evalOne γ env ctx e | null $ getAutoRws γ ctx = do
-    (e',st) <- runStateT (fastEval γ ctx e) env
+    (e',st) <- runStateT (fastEval γ ctx e) env 
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
 evalOne γ env ctx e =
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
@@ -437,7 +434,7 @@ eval _ ctx path
         
 eval γ ctx path =
   do
-    rws <- getRWs
+    rws <- getRWs 
     e'  <- simplify γ ctx <$> evalStep γ ctx e
     let evalIsNewExpr = L.notElem e' pathExprs
     let exprsToAdd    = (if evalIsNewExpr then [e'] else []) ++ map fst rws
@@ -646,7 +643,6 @@ knowledge cfg ctx si = KN
   , knLams                     = [] 
   , knSummary                  =    ((\s -> (smName s, 1)) <$> sims) 
                                  ++ ((\s -> (eqName s, length (eqArgs s))) <$> aenvEqs aenv)
-                                 ++ lits
   , knDCs                      = S.fromList (smDC <$> sims) 
   , knSels                     = Mb.catMaybes $ map makeSel  sims 
   , knConsts                   = Mb.catMaybes $ map makeCons sims 
@@ -656,15 +652,7 @@ knowledge cfg ctx si = KN
       then RWTerminationCheckEnabled (maxRWOrderingConstraints cfg)
       else RWTerminationCheckDisabled
   } 
-  where
-
-    lits = map toSum (toListSEnv (gLits si))
-      where
-        toSum (sym, sort)      = (sym, getArity sort)
-        
-        getArity (FFunc _ rhs) = 1 + getArity rhs
-        getArity _             = 0
-    
+  where 
     sims = aenvSimpl aenv ++ concatMap reWriteDDecl (ddecls si) 
     aenv = ae si 
 
@@ -692,7 +680,6 @@ reWriteDDecl ddecl = concatMap go (ddCtors ddecl)
 
 askSMT :: Config -> SMT.Context -> [(Symbol, Sort)] -> Expr -> IO Bool
 askSMT cfg ctx bs e
---   | isContraPred e     = return False 
   | isTautoPred  e     = return True
   | null (Vis.kvars e) = SMT.checkValidWithContext ctx [] PTrue e'
   | otherwise          = return False
@@ -741,13 +728,13 @@ class Simplifiable a where
 
 
 instance Simplifiable Expr where
-  simplify γ ictx e = mytracepp ("simplification of " ++ showpp e) $ fix (Vis.mapExpr tx) e 
+  simplify γ ictx e = {-# SCC "simplifyExpr" #-}
+    mytracepp ("simplification of " ++ showpp e) $ fix (Vis.mapExpr tx) e
     where 
       fix f e = if e == e' then e else fix f e' where e' = f e 
       tx e 
         | Just e' <- M.lookup e (icSimpl ictx)
         = e' 
-      tx (EBin bop e1 e2) = applyConstantFolding bop e1 e2
       tx (EApp (EVar f) a)
         | Just (dc, c)  <- L.lookup f (knConsts γ) 
         , (EVar dc', _) <- splitEApp a
@@ -757,29 +744,31 @@ instance Simplifiable Expr where
         | isTautoPred b  = e1 
         | isContraPred b = e2
       tx (ECoerc s t e)
-        | s == t = e 
+        | s == t = e
+      tx (EBin bop e1 e2) = applyConstantFolding bop e1 e2
       tx (EApp (EVar f) a)
         | Just (dc, i)  <- L.lookup f (knSels γ) 
         , (EVar dc', es) <- splitEApp a
         , dc == dc' 
         = es!!i
-      tx e = e
-      
-applyConstantFolding :: Bop -> Expr -> Expr -> Expr
+      tx e = e  
+
 applyConstantFolding bop e1 e2 =
-  case (e1, e2) of
+  case (e1', e2') of
     ((ECon (R left)), (ECon (R right))) ->
-      Mb.fromMaybe e (cfR bop left right)
+      Mb.fromMaybe e' (cfR bop left right)
     ((ECon (R left)), (ECon (I right))) ->
-      Mb.fromMaybe e (cfR bop left (fromIntegral right))
+      Mb.fromMaybe e' (cfR bop left (fromIntegral right))
     ((ECon (I left)), (ECon (R right))) ->
-      Mb.fromMaybe e (cfR bop (fromIntegral left) right)
+      Mb.fromMaybe e' (cfR bop (fromIntegral left) right)
     ((ECon (I left)), (ECon (I right))) ->
-      Mb.fromMaybe e (cfI bop left right)
-    _ -> e
+      Mb.fromMaybe e' (cfI bop left right)
+    _ -> e'
   where
     
-    e = EBin bop e1 e2
+    e1' = e1
+    e2' = e2
+    e'  = EBin bop e1' e2'
     
     getOp :: Num a => Bop -> Maybe (a -> a -> a)
     getOp Minus    = Just (-)
