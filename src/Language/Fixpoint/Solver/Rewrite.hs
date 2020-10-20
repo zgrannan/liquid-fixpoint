@@ -211,7 +211,9 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
             return (expr', RW opOrdering)
           Diverging ->
             mzero
-      RWTerminationCheckDisabled -> return (expr', RW [])
+      RWTerminationCheckDisabled -> do
+        MaybeT $ Just <$> (putStrLn $ (show $ toE subE) ++ "\n -> \n" ++ (show expr'))
+        return (expr', RW [])
   where
 
     convert (EIte i t e) = Term "$ite" $ map convert [i,t,e]
@@ -233,6 +235,10 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
     check :: Expr -> MaybeT IO ()
     check e = do
       valid <- MaybeT $ Just <$> isRWValid rwArgs e
+      MaybeT $ Just <$>
+        if not valid
+        then putStrLn ("ng " ++ show e)
+        else return ()
       guard valid
       
     dcPrefix = "lqdc"
@@ -280,13 +286,13 @@ subExprs' (PAtom op lhs rhs) = lhs'' ++ rhs''
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> PAtom op lhs (f e'))) rhs'
 
--- subExprs' e@(EApp{}) = concatMap replace indexedArgs
---   where
---     (f, es)          = splitEApp e
---     indexedArgs      = zip [0..] es
---     replace (i, arg) = do
---       (subArg, toArg) <- subExprs arg
---       return (subArg, \subArg' -> eApps f $ (take i es) ++ (toArg subArg'):(drop (i+1) es))
+subExprs' e@(EApp{}) = concatMap replace indexedArgs
+  where
+    (f, es)          = splitEApp e
+    indexedArgs      = zip [0..] es
+    replace (i, arg) = do
+      (subArg, toArg) <- subExprs arg
+      return (subArg, \subArg' -> eApps f $ (take i es) ++ (toArg subArg'):(drop (i+1) es))
       
 subExprs' _ = []
 

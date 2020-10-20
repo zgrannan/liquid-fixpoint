@@ -456,13 +456,34 @@ eval γ ctx path =
         ints      = concatMap subsFromAssm (S.toList $ icAssms ctx)
         su        = Su (M.fromList ints)
         e'        = subst' e
+
+        canRW c@(PAnd [EEq lhs rhs]) = do
+          if any (isMatch lhs rhs) autorws
+            then return True
+            else isValid γ c
+        canRW c = trace ("-----" ++ show c)  $ isValid γ c
+
+        isMatch lhs rhs (AutoRewrite args lhs' rhs') =
+          if any (/= PTrue) preconds
+          then False
+          else
+            case unify freeVars lhs' lhs of
+              Just su -> trace (show preconds) $ subst su rhs' == rhs
+              Nothing -> trace "NGNGNGNG" False
+          where
+            freeVars = [s | RR _ (Reft (s, _)) <- args ]
+            preconds = [c | RR _ (Reft (_, c)) <- args ]
+          
+        
         subst' ee =
           let ee' = subst su ee
           in if ee == ee' then ee else subst' ee'
-        rwArgs = RWArgs (isValid γ) (knRWTerminationOpts γ)
-        getRWs' s = 
+        rwArgs = RWArgs canRW (knRWTerminationOpts γ)
+        getRWs' s@(subE, toE) = do
+          liftIO $ putStrLn $ "SubE " ++ show subE
           Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrite rwArgs path s) autorws
-      in concat <$> mapM getRWs' (subExprs e')
+      in
+        concat <$> mapM getRWs' (subExprs e')
           
     addConst (e,e') = if isConstant (knDCs γ) e'
                       then ctx { icSimpl = M.insert e e' $ icSimpl ctx} else ctx 
