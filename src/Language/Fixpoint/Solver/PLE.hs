@@ -461,15 +461,15 @@ eval γ ctx path =
           if any (isMatch lhs rhs) autorws
             then return True
             else isValid γ c
-        canRW c = trace ("-----" ++ show c)  $ isValid γ c
+        canRW c = isValid γ c
 
         isMatch lhs rhs (AutoRewrite args lhs' rhs') =
           if any (/= PTrue) preconds
           then False
           else
             case unify freeVars lhs' lhs of
-              Just su -> trace (show preconds) $ subst su rhs' == rhs
-              Nothing -> trace "NGNGNGNG" False
+              Just su -> subst su rhs' == rhs
+              Nothing -> False
           where
             freeVars = [s | RR _ (Reft (s, _)) <- args ]
             preconds = [c | RR _ (Reft (_, c)) <- args ]
@@ -479,8 +479,7 @@ eval γ ctx path =
           let ee' = subst su ee
           in if ee == ee' then ee else subst' ee'
         rwArgs = RWArgs canRW (knRWTerminationOpts γ)
-        getRWs' s@(subE, toE) = do
-          liftIO $ putStrLn $ "SubE " ++ show subE
+        getRWs' s@(subE, toE) =
           Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrite rwArgs path s) autorws
       in
         concat <$> mapM getRWs' (subExprs e')

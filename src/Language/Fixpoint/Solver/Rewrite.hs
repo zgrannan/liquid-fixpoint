@@ -211,8 +211,7 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
             return (expr', RW opOrdering)
           Diverging ->
             mzero
-      RWTerminationCheckDisabled -> do
-        MaybeT $ Just <$> (putStrLn $ (show $ toE subE) ++ "\n -> \n" ++ (show expr'))
+      RWTerminationCheckDisabled -> 
         return (expr', RW [])
   where
 
@@ -235,10 +234,6 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
     check :: Expr -> MaybeT IO ()
     check e = do
       valid <- MaybeT $ Just <$> isRWValid rwArgs e
-      MaybeT $ Just <$>
-        if not valid
-        then putStrLn ("ng " ++ show e)
-        else return ()
       guard valid
       
     dcPrefix = "lqdc"
