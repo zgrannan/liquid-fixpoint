@@ -349,9 +349,11 @@ getAutoRws γ ctx =
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvAccum
 evalOne γ env ctx e | null $ getAutoRws γ ctx = do
+    -- putStrLn $ "$ Eval 1: " ++ show e 
     (e',st) <- runStateT (fastEval γ ctx e) env
     return $ if e' == e then evAccum st else S.insert (e, e') (evAccum st)
-evalOne γ env ctx e =
+evalOne γ env ctx e = do
+  -- putStrLn $ "Eval 2: " ++ show e 
   evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
 
 notGuardedApps :: Expr -> [Expr]
@@ -651,7 +653,8 @@ data Knowledge = KN
   }
 
 isValid :: Knowledge -> Expr -> IO Bool
-isValid γ e = do 
+isValid γ e = do
+  -- putStrLn $ "Checking validity of " ++ show e
   contra <- knPreds γ (knContext γ) (knLams γ) PFalse
   if contra 
     then return False 
