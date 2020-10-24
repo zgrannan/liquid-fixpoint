@@ -306,8 +306,10 @@ makeCandidates γ ctx expr
     cands = filter (\e -> isRedex γ e && (not (e `S.member` icSolved ctx))) (notGuardedApps expr)
 
 isRedex :: Knowledge -> Expr -> Bool 
-isRedex γ e = isGoodApp γ e || isIte e 
-  where 
+isRedex γ e = isGoodApp γ e || isIte e  || isEQ e
+  where
+    isEQ (EEq _ _) = True
+    isEQ _         = False
     isIte (EIte _ _ _) = True 
     isIte _            = False 
 
@@ -362,7 +364,7 @@ notGuardedApps = go
     go e@(EApp e1 e2)  = [e] ++ go e1 ++ go e2
     go (PAnd es)       = concatMap go es
     go (POr es)        = concatMap go es
-    go (PAtom _ e1 e2) = go e1  ++ go e2
+    go e@(PAtom _ e1 e2) = [e] ++ go e1  ++ go e2
     go (PIff e1 e2)    = go e1  ++ go e2
     go (PImp e1 e2)    = go e1  ++ go e2 
     go (EBin  _ e1 e2) = go e1  ++ go e2

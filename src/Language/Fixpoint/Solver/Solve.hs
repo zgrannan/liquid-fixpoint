@@ -32,6 +32,7 @@ import qualified Data.HashMap.Strict as M
 import qualified Data.HashSet        as S
 -- import qualified Data.Maybe          as Mb 
 import qualified Data.List           as L
+import Debug.Trace (trace)
 
 --------------------------------------------------------------------------------
 solve :: (NFData a, F.Fixpoint a, Show a, F.Loc a) => Config -> F.SInfo a -> IO (F.Result (Integer, a))
@@ -134,7 +135,7 @@ refineC _i s c
   | null rhs  = return (False, s)
   | otherwise = do be     <- getBinds
                    let lhs = S.lhsPred be s c
-                   kqs    <- filterValid (cstrSpan c) lhs rhs
+                   kqs    <- trace ("lhs: " ++ show lhs ++ " rhs: " ++ show rhs) $ filterValid (cstrSpan c) lhs rhs
                    return  $ S.update s ks kqs
   where
     _ci       = F.subcId c
