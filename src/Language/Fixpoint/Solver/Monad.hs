@@ -192,7 +192,9 @@ filterValid_ sp p qs me = catMaybes <$> do
     smtBracketAt sp me "filterValidRHS" $ do
       smtAssert me (F.PNot q)
       valid <- smtCheckUnsat me
-      when valid $ smtWrite me "(get-unsat-core)"
+      when valid $ do
+        result <- command me GetUnsatCore
+        printf "Unsat Core: %s" (show result)
       return $ if valid then Just x else Nothing
 
 

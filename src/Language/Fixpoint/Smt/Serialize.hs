@@ -245,6 +245,7 @@ instance SMTLIB2 Command where
   smt2 _   (CheckSat)          = "(check-sat)"
   smt2 env (GetValue xs)       = key "key-value" (parens (smt2s env xs))
   smt2 env (CMany cmds)        = smt2many (smt2 env <$> cmds)
+  smt2 _   GetUnsatCore        = "(get-unsat-core)"
 
 instance SMTLIB2 (Triggered Expr) where
   smt2 env (TR NoTrigger e)       = smt2 env e

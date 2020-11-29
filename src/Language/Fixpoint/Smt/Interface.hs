@@ -79,7 +79,7 @@ import           Control.Monad
 import           Control.Exception
 import           Data.Char
 import qualified Data.HashMap.Strict      as M
-import           Data.Maybe              (fromMaybe)
+import           Data.Maybe              (fromJust, fromMaybe)
 #if !MIN_VERSION_base(4,14,0)
 import           Data.Semigroup          (Semigroup (..))
 #endif
@@ -103,6 +103,7 @@ import           Text.PrettyPrint.HughesPJ (text)
 import           Language.Fixpoint.SortCheck
 import           Language.Fixpoint.Utils.Builder
 import Data.Hashable (Hashable(hash))
+import Data.Scientific
 -- import qualified Language.Fixpoint.Types as F
 -- import           Language.Fixpoint.Types.PrettyPrint (tracepp)
 
@@ -166,6 +167,7 @@ command me !cmd       = say cmd >> hear cmd
     say               = smtWrite me . Builder.toLazyText . runSmt2 env
     hear CheckSat     = smtRead me
     hear (GetValue _) = smtRead me
+    hear GetUnsatCore = smtRead me
     hear _            = return Ok
 
 
@@ -178,7 +180,7 @@ smtRead me = {-# SCC "smtRead" #-} do
   ln  <- smtReadRaw me
   res <- A.parseWith (smtReadRaw me) responseP ln
   case A.eitherResult res of
-    Left e  -> Misc.errorstar $ "SMTREAD:" ++ e
+    Left e  -> Misc.errorstar $ "SMTREAD:" ++ (show ln)
     Right r -> do
       maybe (return ()) (\h -> hPutStrLnNow h $ blt ("; SMT Says: " <> (bShow r))) (ctxLog me)
       when (ctxVerbose me) $ LTIO.putStrLn $ blt ("SMT Says: " <> bShow r)
@@ -195,7 +197,9 @@ responseP = {-# SCC "responseP" #-} A.char '(' *> sexpP
          <|> A.string "unknown" *> return Unknown
 
 sexpP :: SmtParser Response
-sexpP = {-# SCC "sexpP" #-} A.string "error" *> (Error <$> errorP)
+sexpP = {-# SCC "sexpP" #-}
+        A.string "error" *> (Error <$> errorP)
+     <|> Asserts <$> assertsP
      <|> Values <$> valuesP
 
 errorP :: SmtParser T.Text
@@ -213,6 +217,11 @@ pairP = {-# SCC "pairP" #-}
      !v <- valueP
      A.char ')'
      return (x,v)
+
+assertsP :: SmtParser [Int]
+assertsP = do
+  res <- (A.sepBy (A.string "p-" <* A.scientific) A.space) <* A.char ')'
+  return $ map (fromJust . toBoundedInteger) res
 
 symbolP :: SmtParser Symbol
 symbolP = {-# SCC "symbolP" #-} symbol <$> A.takeWhile1 (not . isSpace)
