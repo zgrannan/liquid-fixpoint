@@ -46,11 +46,11 @@ import           Language.Fixpoint.Solver.Stats
 import           Language.Fixpoint.Graph.Types (SolverInfo (..))
 -- import           Language.Fixpoint.Solver.Solution
 -- import           Data.Maybe           (catMaybes)
-import           Data.List            (partition)
+import           Data.List            (nub, partition)
 -- import           Data.Char            (isUpper)
 import           Control.Monad.State.Strict
 import qualified Data.HashMap.Strict as M
-import           Data.Maybe (catMaybes)
+import           Data.Maybe (fromJust, isJust, catMaybes)
 import           Control.Exception.Base (bracket)
 import Text.Printf
 
@@ -169,10 +169,15 @@ filterValid sp p qs = do
 
 
 splitPLEConstraints :: F.Expr -> ([F.Expr], [F.Expr])
-splitPLEConstraints p = partition isPLEConstraint (F.splitPAnd p)
+splitPLEConstraints p =
+    let
+      (fromPLE, notFromPLE) = partition isPLEConstraint (F.splitPAnd p)
+    in
+      (map (fromJust . getPLEConstraint) fromPLE, notFromPLE)
   where
-    isPLEConstraint (F.POr [x, _]) = x == pleID'
-    isPLEConstraint _ = False
+    getPLEConstraint (F.POr [x, r]) | x == pleID' = Just r
+    getPLEConstraint _                            = Nothing
+    isPLEConstraint = isJust . getPLEConstraint
 
 
 filterValid_ :: F.SrcSpan -> F.Expr -> F.Cand a -> Context -> IO [a]
@@ -180,13 +185,14 @@ filterValid_ sp p qs me = catMaybes <$> do
   let (soft, hard) = splitPLEConstraints p
   printf "%d soft constraints, %d hard\n" (length soft) (length hard)
   -- mapM_ print hard
-  smtAssert me (F.PAnd soft)
+  mapM_ (smtAssert' me) (nub soft)
   smtAssert me (F.PAnd hard)
   -- smtAssert me p
   forM qs $ \(q, x) ->
     smtBracketAt sp me "filterValidRHS" $ do
       smtAssert me (F.PNot q)
       valid <- smtCheckUnsat me
+      when valid $ smtWrite me "(get-unsat-core)"
       return $ if valid then Just x else Nothing
 
 

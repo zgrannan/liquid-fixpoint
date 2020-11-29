@@ -42,6 +42,7 @@ module Language.Fixpoint.Smt.Interface (
     , smtDecl
     , smtDecls
     , smtAssert
+    , smtAssert'
     , smtFuncDecl
     , smtAssertAxiom
     , smtCheckUnsat
@@ -101,6 +102,7 @@ import           Data.Attoparsec.Internal.Types (Parser)
 import           Text.PrettyPrint.HughesPJ (text)
 import           Language.Fixpoint.SortCheck
 import           Language.Fixpoint.Utils.Builder
+import Data.Hashable (Hashable(hash))
 -- import qualified Language.Fixpoint.Types as F
 -- import           Language.Fixpoint.Types.PrettyPrint (tracepp)
 
@@ -377,6 +379,9 @@ smtCheckSat me p
 smtAssert :: Context -> Expr -> IO ()
 smtAssert me p  = interact' me (Assert Nothing p)
 
+smtAssert' :: Context -> Expr -> IO ()
+smtAssert' me p  = interact' me (Assert (Just (hash p)) p)
+
 smtAssertAxiom :: Context -> Triggered Expr -> IO ()
 smtAssertAxiom me p  = interact' me (AssertAx p)
 
@@ -422,13 +427,15 @@ z3_432_options :: [LT.Text]
 z3_432_options
   = [ "(set-option :auto-config false)"
     , "(set-option :model true)"
-    , "(set-option :model.partial false)"]
+    , "(set-option :model.partial false)"
+    , "(set-option :produce-unsat-cores true)"]
 
 z3_options :: [LT.Text]
 z3_options
   = [ "(set-option :auto-config false)"
     , "(set-option :model true)"
-    , "(set-option :model-partial false)"]
+    , "(set-option :model-partial false)"
+    , "(set-option :produce-unsat-cores true)"]
 
 
 
