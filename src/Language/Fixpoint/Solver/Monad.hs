@@ -28,6 +28,7 @@ module Language.Fixpoint.Solver.Monad
        )
        where
 
+import           Language.Fixpoint.Solver.PLE (pleID')
 import           Language.Fixpoint.Utils.Progress
 import qualified Language.Fixpoint.Types.Config  as C
 import           Language.Fixpoint.Types.Config  (Config)
@@ -51,6 +52,7 @@ import           Control.Monad.State.Strict
 import qualified Data.HashMap.Strict as M
 import           Data.Maybe (catMaybes)
 import           Control.Exception.Base (bracket)
+import Text.Printf
 
 --------------------------------------------------------------------------------
 -- | Solver Monadic API --------------------------------------------------------
@@ -58,7 +60,7 @@ import           Control.Exception.Base (bracket)
 
 type SolveM = StateT SolverState IO
 
-data SolverState = SS 
+data SolverState = SS
   { ssCtx     :: !Context          -- ^ SMT Solver Context
   , ssBinds   :: !F.BindEnv        -- ^ All variables and types
   , ssStats   :: !Stats            -- ^ Solver Statistics
@@ -91,7 +93,7 @@ runSolverM cfg sI act =
 
 
 --------------------------------------------------------------------------------
-getBinds :: SolveM F.BindEnv 
+getBinds :: SolveM F.BindEnv
 --------------------------------------------------------------------------------
 getBinds = ssBinds <$> get
 
@@ -165,9 +167,22 @@ filterValid sp p qs = do
   incVald (length qs')
   return qs'
 
+
+splitPLEConstraints :: F.Expr -> ([F.Expr], [F.Expr])
+splitPLEConstraints p = partition isPLEConstraint (F.splitPAnd p)
+  where
+    isPLEConstraint (F.POr [x, _]) = x == pleID'
+    isPLEConstraint _ = False
+
+
 filterValid_ :: F.SrcSpan -> F.Expr -> F.Cand a -> Context -> IO [a]
 filterValid_ sp p qs me = catMaybes <$> do
-  smtAssert me p
+  let (soft, hard) = splitPLEConstraints p
+  printf "%d soft constraints, %d hard\n" (length soft) (length hard)
+  -- mapM_ print hard
+  smtAssert me (F.PAnd soft)
+  smtAssert me (F.PAnd hard)
+  -- smtAssert me p
   forM qs $ \(q, x) ->
     smtBracketAt sp me "filterValidRHS" $ do
       smtAssert me (F.PNot q)

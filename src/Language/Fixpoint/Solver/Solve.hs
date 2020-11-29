@@ -220,10 +220,10 @@ minimizeConjuncts p = F.pAnd <$> go (F.conjuncts p) []
 isUnsat :: (F.Loc a, NFData a) => Sol.Solution -> F.SimpC a -> SolveM Bool
 --------------------------------------------------------------------------------
 isUnsat s c = do
-  -- lift   $ printf "isUnsat %s" (show (F.subcId c))
   _     <- tickIter True -- newScc
   be    <- getBinds
   let lp = S.lhsPred be s c
+  -- lift   $ printf "isUnsat %s" (show lp)
   let rp = rhsPred        c
   res   <- not <$> isValid (cstrSpan c) lp rp
   lift   $ whenLoud $ showUnsat res (F.subcId c) lp rp
