@@ -146,12 +146,12 @@ evalCandsLoop cfg ictx0 ctx γ env = go mempty ictx0
                             ,  e <- S.toList (snd `S.map` exprs)]
       in
         exprs <> (S.fromList $ concat rws)
-    showProof facts =
+    showProof ictx facts =
       case icSubcId ictx0 of
         Just cid | S.member cid (knShowProofs γ) ->
-          liftIO $ putStrLn (generateEqs γ facts)
+          liftIO $ putStrLn (generateEqs γ ictx facts)
         _ -> return ()
-    go facts ictx | S.null (icCands ictx) = showProof facts >> return ictx
+    go facts ictx | S.null (icCands ictx) = showProof ictx facts >> return ictx
     go facts ictx = do
                   let cands = icCands ictx
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
@@ -160,7 +160,7 @@ evalCandsLoop cfg ictx0 ctx γ env = go mempty ictx0
                                mapM (evalOne γ env' ictx) (S.toList cands)
                   let (facts', us) = mconcat evalResults
                   if S.null (us `S.difference` icEquals ictx)
-                        then showProof facts >> return ictx
+                        then showProof ictx facts >> return ictx
                         else do  let oks      = fst `S.map` us
                                  let us'      = withRewrites us
                                  let eqsSMT   = evalToSMT "evalCandsLoop" cfg ctx `S.map` us'
@@ -371,30 +371,10 @@ getAutoRws γ ctx =
     cid <- icSubcId ctx
     M.lookup cid $ knAutoRWs γ
 
+dsParens :: Expr -> [Char]
+dsParens e@EBin{}   = "(" ++ desugar e ++ ")"
 dsParens e@(EApp _ _) = "(" ++ desugar e ++ ")"
 dsParens e            = desugar e
-
-simplify' :: Expr -> Expr
-simplify' e
-  | ((EVar f), [arg]) <- splitEApp e
-  , Just c            <- stripPrefix "lqdc##$select##" f
-  , [name, index]     <- splitOn "##" (symbolText c)
-  , (EVar g, args)    <- splitEApp arg
-  , name == symbolText g
-  = simplify' (args !! (((read . unpack) index) - 1))
-
-simplify' e@(EApp{}) =
-  let
-    (f, args) = splitEApp e
-    f'        = simplify' f
-    args'     = map simplify' args
-    e'        = eApps f' args'
-  in
-    if e /= e'
-    then simplify' e'
-    else e
-
-simplify' e = e
 
 desugar :: Expr -> String
 desugar (EApp (EVar f) x )
@@ -406,10 +386,11 @@ desugar (EApp (EVar f) x)  | Just test <- unTestSymbol f =
 desugar e@(EApp _ _) =
   let (f, args) = splitEApp e
   in L.intercalate " " (desugar f : map dsParens args)
-desugar (EVar x)           = symbolString x
-desugar (ECon (I c))       = show c
-desugar PFalse             = "False"
-desugar PTrue              = "True"
+desugar (EVar x)            = symbolString x
+desugar (ECon (I c))        = show c
+desugar PFalse              = "False"
+desugar PTrue               = "True"
+desugar (EBin Minus t1 t2)  = dsParens t1 ++ " - " ++ dsParens t2
 -- desugar (PAtom Eq lhs rhs) = desugar lhs ++ " == " ++ desugar rhs
 desugar e                  = error (show e)
 
@@ -418,14 +399,40 @@ uselessPatternMatch γ (EApp (EVar f) arg) | (EVar g, _) <- splitEApp arg =
   isTestSymbol f && S.member g (knDCs γ)
 uselessPatternMatch _ _ = False
 
-generateEqs :: Knowledge -> Facts -> String
-generateEqs γ facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFacts))
+normalForm :: Expr -> Facts -> Expr
+normalForm e0 f = nf [e0] where
+  nf :: [Expr] -> Expr
+  nf [] = undefined
+  nf path@(e:_) = case S.toList (S.filter (\(lhs, rhs) -> lhs == e && rhs /= e) f) of
+    [(_, e')] | L.notElem e' path -> nf (e':path)
+    []                            -> e
+    _                             -> error "Nonterminating?"
+
+
+{-
+The algorithm:
+
+1. Run `simplify` on all facts (for constant folding, selector elimination, etc)
+2. For each fact, evaluate it to it's "normal form" (i.e the PLE fixpoint)
+3. Re-simplify the facts, in case the normal form enables new simplifications
+4. Eliminate redundant facts (useless pattern matches, x == x)
+-}
+generateEqs :: Knowledge -> ICtx -> Facts -> String
+generateEqs γ ictx facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFacts))
   where
+    simplifyEQ (lhs, rhs) =
+      let
+        rhs'    = Vis.mapExpr (flip normalForm facts') rhs
+        factsL  = S.filter ((/=) lhs . fst) facts'
+        lhs'    = Vis.mapExpr (flip normalForm factsL) lhs
+      in
+        (simplify γ ictx lhs', simplify γ ictx rhs')
     both f (x,y)      = (f x, f y)
-    simplified        = S.map (both simplify') facts
+    facts'            = S.map (both $ simplify γ ictx) facts
+    simplified        = S.map simplifyEQ facts'
     usefulFacts       = S.filter canUse simplified
     canUse (lhs, rhs) = not (uselessPatternMatch γ lhs || uselessPatternMatch γ rhs || lhs == rhs)
-    toEq (lhs, rhs)   = "(" ++ desugar lhs ++ " === " ++ desugar rhs ++ ")"
+    toEq (lhs, rhs)   = "(" ++ desugar lhs ++ " ==. " ++ desugar rhs ++ ")"
 
 type EvalOneResult = (Facts, EvAccum)
 
