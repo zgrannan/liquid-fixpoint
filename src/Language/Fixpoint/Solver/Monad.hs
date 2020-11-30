@@ -28,7 +28,7 @@ module Language.Fixpoint.Solver.Monad
        )
        where
 
-import           Language.Fixpoint.Solver.PLE (pleID')
+import           Language.Fixpoint.Solver.PLE (pleID', reify)
 import           Language.Fixpoint.Utils.Progress
 import qualified Language.Fixpoint.Types.Config  as C
 import           Language.Fixpoint.Types.Config  (Config)
@@ -46,13 +46,16 @@ import           Language.Fixpoint.Solver.Stats
 import           Language.Fixpoint.Graph.Types (SolverInfo (..))
 -- import           Language.Fixpoint.Solver.Solution
 -- import           Data.Maybe           (catMaybes)
-import           Data.List            (nub, partition)
+import           Data.List            (intercalate, find, nub, partition)
 -- import           Data.Char            (isUpper)
 import           Control.Monad.State.Strict
 import qualified Data.HashMap.Strict as M
 import           Data.Maybe (fromJust, isJust, catMaybes)
 import           Control.Exception.Base (bracket)
 import Text.Printf
+import Data.Hashable (Hashable(hash))
+import qualified Data.Text as T
+import Language.Fixpoint.SortCheck (unElab)
 
 --------------------------------------------------------------------------------
 -- | Solver Monadic API --------------------------------------------------------
@@ -182,7 +185,6 @@ splitPLEConstraints p =
 
 filterValid_ :: F.SrcSpan -> F.Expr -> F.Cand a -> Context -> IO [a]
 filterValid_ sp p qs me = catMaybes <$> do
-  let (soft, hard) = splitPLEConstraints p
   printf "%d soft constraints, %d hard\n" (length soft) (length hard)
   -- mapM_ print hard
   mapM_ (smtAssert' me) (nub soft)
@@ -190,12 +192,28 @@ filterValid_ sp p qs me = catMaybes <$> do
   -- smtAssert me p
   forM qs $ \(q, x) ->
     smtBracketAt sp me "filterValidRHS" $ do
+      printf "Check: %s\n" (reify (unElab q))
       smtAssert me (F.PNot q)
       valid <- smtCheckUnsat me
       when valid $ do
-        result <- command me GetUnsatCore
-        printf "Unsat Core: %s\n" (show result)
+        (Asserts assertIDs) <- command me GetUnsatCore
+        printf "Unsat Core: %s\n" (show assertIDs)
+        putStrLn (proof assertIDs)
+        -- printf "Unsat Core: %s\n" (show result)
       return $ if valid then Just x else Nothing
+  where
+    (soft, hard) = splitPLEConstraints p
+    toConstraintStr smtAssertID =
+      let
+        hash'    = read (drop 2 $ T.unpack smtAssertID)
+        (Just c) = find (\c -> hash c == hash') soft
+      in
+        reifyEQ (unElab c)
+    proof assertIDs = intercalate " ?\n" (map toConstraintStr assertIDs)
+    -- proof assertIDs = intercalate " ?\n" (map (reifyEQ . unElab) soft)
+    reifyEQ :: F.Expr -> String
+    reifyEQ (F.EEq lhs rhs) = printf "(%s ==. %s)" (reify lhs) (reify rhs)
+
 
 
 --------------------------------------------------------------------------------

@@ -19,7 +19,7 @@
 {-# LANGUAGE RecordWildCards           #-}
 {-# LANGUAGE ExistentialQuantification #-}
 
-module Language.Fixpoint.Solver.PLE (instantiate, pleID') where
+module Language.Fixpoint.Solver.PLE (instantiate, pleID', reify) where
 
 import           Language.Fixpoint.Types hiding (simplify)
 import           Language.Fixpoint.Types.Config  as FC
@@ -41,6 +41,7 @@ import qualified Data.List            as L
 import qualified Data.Maybe           as Mb
 import           Data.Text (splitOn, unpack)
 import           Debug.Trace          (trace)
+import Text.Printf (printf)
 
 mytracepp :: (PPrint a) => String -> a -> a
 mytracepp = notracepp
@@ -372,27 +373,33 @@ getAutoRws γ ctx =
     M.lookup cid $ knAutoRWs γ
 
 dsParens :: Expr -> [Char]
-dsParens e@EBin{}   = "(" ++ desugar e ++ ")"
-dsParens e@(EApp _ _) = "(" ++ desugar e ++ ")"
-dsParens e            = desugar e
+dsParens e@EBin{}   = "(" ++ reify e ++ ")"
+dsParens e@(EApp _ _) = "(" ++ reify e ++ ")"
+dsParens e            = reify e
 
-desugar :: Expr -> String
-desugar (EApp (EVar f) x )
+reify :: Expr -> String
+reify (EApp (EVar f) x )
   | Just c <- stripPrefix "lqdc##$select##" f
   = let [name, index] = splitOn "##" (symbolText c)
     in "case " ++ dsParens x ++ " of {" ++ unpack name ++ " x -> x }"
-desugar (EApp (EVar f) x)  | Just test <- unTestSymbol f =
+reify (EApp (EVar f) x)  | Just test <- unTestSymbol f =
   "case " ++ dsParens x ++ " of { " ++ (symbolString test) ++ "{} -> True ; _ -> False }"
-desugar e@(EApp _ _) =
+reify e@(EApp _ _) =
   let (f, args) = splitEApp e
-  in L.intercalate " " (desugar f : map dsParens args)
-desugar (EVar x)            = symbolString x
-desugar (ECon (I c))        = show c
-desugar PFalse              = "False"
-desugar PTrue               = "True"
-desugar (EBin Minus t1 t2)  = dsParens t1 ++ " - " ++ dsParens t2
--- desugar (PAtom Eq lhs rhs) = desugar lhs ++ " == " ++ desugar rhs
-desugar e                  = error (show e)
+  in L.intercalate " " (reify f : map dsParens args)
+reify (EVar x)            = symbolString x
+reify (ECon (I c))        = show c
+reify PFalse              = "False"
+reify PTrue               = "True"
+reify (EBin Minus t1 t2)  = dsParens t1 ++ " - " ++ dsParens t2
+reify (EIte i t e)        = printf "if %s then %s else %s" (reify i) (reify t) (reify e)
+reify (PAtom op lhs rhs)  = printf "%s %s %s" (reify lhs) (opString op) (reify rhs)
+  where
+    opString :: Brel -> String
+    opString Eq = "=="
+    opString Ne = "/="
+    opString op = show (toFix op)
+reify e                  = error (show e)
 
 uselessPatternMatch :: Knowledge -> Expr -> Bool
 uselessPatternMatch γ (EApp (EVar f) arg) | (EVar g, _) <- splitEApp arg =
@@ -432,7 +439,7 @@ generateEqs γ ictx facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFac
     simplified        = S.map simplifyEQ facts'
     usefulFacts       = S.filter canUse simplified
     canUse (lhs, rhs) = not (uselessPatternMatch γ lhs || uselessPatternMatch γ rhs || lhs == rhs)
-    toEq (lhs, rhs)   = "(" ++ desugar lhs ++ " ==. " ++ desugar rhs ++ ")"
+    toEq (lhs, rhs)   = "(" ++ reify lhs ++ " ==. " ++ reify rhs ++ ")"
 
 type EvalOneResult = (Facts, EvAccum)
 
