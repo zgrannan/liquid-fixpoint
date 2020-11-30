@@ -218,10 +218,8 @@ pairP = {-# SCC "pairP" #-}
      A.char ')'
      return (x,v)
 
-assertsP :: SmtParser [Int]
-assertsP = do
-  res <- (A.sepBy (A.string "p-" <* A.scientific) A.space) <* A.char ')'
-  return $ map (fromJust . toBoundedInteger) res
+assertsP :: SmtParser [T.Text]
+assertsP = A.sepBy valueP A.space <* A.char ')'
 
 symbolP :: SmtParser Symbol
 symbolP = {-# SCC "symbolP" #-} symbol <$> A.takeWhile1 (not . isSpace)

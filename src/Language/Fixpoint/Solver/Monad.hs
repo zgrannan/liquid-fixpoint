@@ -194,7 +194,7 @@ filterValid_ sp p qs me = catMaybes <$> do
       valid <- smtCheckUnsat me
       when valid $ do
         result <- command me GetUnsatCore
-        printf "Unsat Core: %s" (show result)
+        printf "Unsat Core: %s\n" (show result)
       return $ if valid then Just x else Nothing
 
 

@@ -81,7 +81,7 @@ data Response     = Ok
                   | Unsat
                   | Unknown
                   | Values [(Symbol, T.Text)]
-                  | Asserts [Symbol]
+                  | Asserts [T.Text]
                   | Error !T.Text
                   deriving (Eq, Show)
 
