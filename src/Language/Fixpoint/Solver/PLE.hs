@@ -42,6 +42,7 @@ import qualified Data.Maybe           as Mb
 import           Data.Text (splitOn, unpack)
 import           Debug.Trace          (trace)
 import Text.Printf (printf)
+import Data.Hashable (Hashable(hash))
 
 mytracepp :: (PPrint a) => String -> a -> a
 mytracepp = notracepp
@@ -372,34 +373,89 @@ getAutoRws γ ctx =
     cid <- icSubcId ctx
     M.lookup cid $ knAutoRWs γ
 
-dsParens :: Expr -> [Char]
-dsParens e@EBin{}   = "(" ++ reify e ++ ")"
-dsParens e@(EApp _ _) = "(" ++ reify e ++ ")"
-dsParens e            = reify e
+testStr :: Symbol -> String
+testStr test = if symbolString test == "GHC.Types.[]" then"[]" else symbolString test ++ "{}"
 
-reify :: Expr -> String
-reify (EApp (EVar f) x )
+type Constructors = M.HashMap String Int
+
+
+data ReifyContext = ReifyContext
+  {  rSplitLists :: S.HashSet Expr
+  ,  rParens     :: Bool
+  }
+
+parens :: ReifyContext -> String -> String
+parens rc s =
+  if rParens rc
+  then printf "(%s)" s
+  else s
+
+reifyP' :: ReifyContext -> Expr -> String
+reifyP' rc = reify' rc{rParens=True}
+
+reifyNP' :: ReifyContext -> Expr -> String
+reifyNP' rc = reify' rc{rParens=False}
+
+withListSplit :: Expr -> ReifyContext -> ReifyContext
+withListSplit e rc = rc{rSplitLists = S.insert e (rSplitLists rc)}
+
+patternHead :: Expr -> String
+patternHead s = printf "head_%s" (show $ abs $ hash s)
+
+patternTail :: Expr -> String
+patternTail s = printf "tail_%s" (show $ abs $ hash s)
+
+reify' :: ReifyContext -> Expr -> String
+reify' rc (EApp (EVar f) x )
+  | Just c <- stripPrefix "lqdc##$select##" f
+  , [name, index] <- splitOn "##" (symbolText c)
+  , name == "GHC.Types.:"
+  , S.member x (rSplitLists rc)
+  = if index == "1" then patternHead x else patternTail x
+reify' rc (EApp (EVar f) x )
   | Just c <- stripPrefix "lqdc##$select##" f
   = let [name, index] = splitOn "##" (symbolText c)
-    in "case " ++ dsParens x ++ " of {" ++ unpack name ++ " x -> x }"
-reify (EApp (EVar f) x)  | Just test <- unTestSymbol f =
-  "case " ++ dsParens x ++ " of { " ++ (symbolString test) ++ "{} -> True ; _ -> False }"
-reify e@(EApp _ _) =
+    in parens rc $ "case " ++ reify' rc x ++ " of {" ++ unpack name ++ " x -> x }"
+reify' rc (EApp (EVar f) x)  | Just test <- unTestSymbol f =
+  parens rc $ "case " ++ reify' rc x ++ " of { " ++ testStr test ++ " -> True ; _ -> False }"
+reify' rc e@(EApp _ _) =
   let (f, args) = splitEApp e
-  in L.intercalate " " (reify f : map dsParens args)
-reify (EVar x)            = symbolString x
-reify (ECon (I c))        = show c
-reify PFalse              = "False"
-reify PTrue               = "True"
-reify (EBin Minus t1 t2)  = dsParens t1 ++ " - " ++ dsParens t2
-reify (EIte i t e)        = printf "if %s then %s else %s" (reify i) (reify t) (reify e)
-reify (PAtom op lhs rhs)  = printf "%s %s %s" (reify lhs) (opString op) (reify rhs)
-  where
-    opString :: Brel -> String
-    opString Eq = "=="
-    opString Ne = "/="
-    opString op = show (toFix op)
-reify e                  = error (show e)
+  in parens rc $ unwords (reifyP' rc f : map (reifyP' rc) args)
+reify' _ (EVar x)            = takeWhile (/= '#') $ symbolString x
+reify' _ (ECon (I c))        = show c
+reify' _ PFalse              = "False"
+reify' _ PTrue               = "True"
+reify' rc (EBin op t1 t2) =
+  parens rc $ printf "%s %s %s" (reifyP' rc t1) (show $ toFix op) (reifyP' rc t2)
+
+reify' rc (EIte (EApp (EVar f) x) t e) | Just "GHC.Types.[]" <- unTestSymbol f =
+  parens rc $ printf
+    "case %s of { [] -> %s ; ( %s : %s) -> %s }"
+    (reifyP' rc x)
+    (reify' rc t)
+    (patternHead x)
+    (patternTail x)
+    (reify' (withListSplit x rc) e)
+
+reify' rc ee@(EIte (EApp (EVar f) x) t e) | Just test <- unTestSymbol f =
+  show (toFix ee)
+  -- parens rc $ printf
+  --   "case %s of { %s -> %s ; _ -> %s }"
+  --   (reifyP' rc x) (testStr test) (reifyNP' rc t) (reifyNP' rc e)
+
+reify' rc (EIte i t e) =
+  parens rc $ printf "if %s then %s else %s" (reify' rc i) (reify' rc t) (reify' rc e)
+reify' rc (PAtom op lhs rhs)  =
+  parens rc $ printf "%s %s %s" (reify' rc lhs) (opString op) (reify' rc rhs)
+    where
+      opString :: Brel -> String
+      opString Eq = "=="
+      opString Ne = "/="
+      opString op = show (toFix op)
+reify' _ e                  = error (show e)
+
+reify :: Expr -> String
+reify = reify' (ReifyContext S.empty False)
 
 uselessPatternMatch :: Knowledge -> Expr -> Bool
 uselessPatternMatch γ (EApp (EVar f) arg) | (EVar g, _) <- splitEApp arg =
@@ -444,9 +500,9 @@ generateEqs γ ictx facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFac
 type EvalOneResult = (Facts, EvAccum)
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvalOneResult
-evalOne γ env ctx e | null $ getAutoRws γ ctx = do
-    (e',st) <- runStateT (fastEval γ ctx e) env
-    return (evFacts st, if e' == e then evAccum st else S.insert (e, e') (evAccum st))
+-- evalOne γ env ctx e | null $ getAutoRws γ ctx = do
+--     (e',st) <- runStateT (fastEval γ ctx e) env
+--     return (evFacts st, evAccum st)
 evalOne γ env ctx e = do
   result <- execStateT (eval γ ctx [(e, PLE)]) env
   return (evFacts result, evAccum result)
