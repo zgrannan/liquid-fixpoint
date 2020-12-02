@@ -19,7 +19,8 @@
 {-# LANGUAGE RecordWildCards           #-}
 {-# LANGUAGE ExistentialQuantification #-}
 
-module Language.Fixpoint.Solver.PLE (instantiate, pleID', reify) where
+module Language.Fixpoint.Solver.PLE
+  (instantiate, pleID', reify, matchedElement, unANF, anfMap) where
 
 import           Language.Fixpoint.Types hiding (simplify)
 import           Language.Fixpoint.Types.Config  as FC
@@ -379,12 +380,14 @@ testStr test = if symbolString test == "GHC.Types.[]" then"[]" else symbolString
 
 type Constructors = M.HashMap Text Int
 type Splits = M.HashMap Expr Constructors
+type ImplicitCons = M.HashMap Symbol (Text, Int)
 
 data ReifyContext = ReifyContext
   {  rSplits       :: Splits
   ,  rParens       :: Bool
   ,  rSplitExpr    :: Maybe Expr
   ,  rCurrentSplit :: Maybe Text
+  ,  rImplicitCons :: ImplicitCons
   }
 
 parens' :: Bool -> String -> String
@@ -401,6 +404,14 @@ reifyP' e = modify (\rc -> rc{rParens = True}) >> reify' e
 
 reifyNP' :: Expr -> Reify String
 reifyNP' e = modify (\rc -> rc{rParens = False}) >> reify' e
+
+withImplicitCons :: Symbol -> Text -> Int -> ImplicitCons -> ImplicitCons
+withImplicitCons e s i ic = ic'
+  where
+    ic' = case M.lookup e ic of
+      Just (_, i') | i' >= i -> ic
+      _                      -> M.insert e (s,i) ic
+
 
 withSplit :: Expr -> Text -> Int -> Splits -> Splits
 withSplit e s i splits = splits'
@@ -425,24 +436,28 @@ matchedElement e s = printf "m%d_%s_%d" (abs $ hash e) (sanitize $ T.unpack s)
 
 type Reify a = State ReifyContext a
 
+toPatternMatch :: Expr -> Text -> Int -> String
+toPatternMatch e splitName arity =
+  let
+    args = map (matchedElement e splitName) [1..arity]
+  in
+    printf "%s %s" (T.unpack splitName) (unwords args)
+
 reify' :: Expr -> Reify String
-reify' (EApp (EVar f) x )
+reify' (EApp (EVar f) (EVar x) )
   | [_, c] <- splitOn "lqdc##$select##" (symbolText f)
   , [name, index] <- splitOn "##" c
   = do
       let index' = read (T.unpack index)
       rc <- get
-      if rSplitExpr rc == Just x
+      if rSplitExpr rc == Just (EVar x)
         then
-          do
-            put rc{ rCurrentSplit = Just name
-                  , rSplits = withSplit x name index' (rSplits rc)
-                  }
-            return $ matchedElement x name index'
+          put rc{ rCurrentSplit = Just name
+                , rSplits = withSplit (EVar x) name index' (rSplits rc)
+                }
         else
-          do
-            x' <- reify' x
-            parens $ return $ printf "case %s of { %s x -> x }" x' (unpack name)
+          put rc{ rImplicitCons = withImplicitCons x name index' (rImplicitCons rc) }
+      return $ matchedElement (EVar x) name index'
 -- reify' (EApp (EVar f) x)  | Just test <- unTestSymbol f =
 --   parens $ "case " ++ reify' rc x ++ " of { " ++ testStr test ++ " -> True ; _ -> False }"
 reify' e@(EApp _ _) =
@@ -452,7 +467,8 @@ reify' e@(EApp _ _) =
       f'        <- reifyP' f
       args'     <- mapM reifyP' args
       return $ unwords (f' : args')
-reify' (EVar x)            = return $ takeWhile (/= '#') $ symbolString x
+reify' (EVar x)            = -- return $ symbolString x
+                             return $ takeWhile (/= '#') $ symbolString x
 reify' (ECon (I c))        = return $ show c
 reify' PFalse              = return "False"
 reify' PTrue               = return "True"
@@ -486,7 +502,7 @@ reify' (EIte (EApp (EVar f) x) t e) | isTestSymbol f =
         let (Just cons)  = M.lookup x splits
         let (Just arity) = M.lookup splitName cons
         let args = map (matchedElement x splitName) [1..arity]
-        return $ printf "%s %s -> %s" (T.unpack splitName) (unwords args) e
+        return $ printf "%s -> %s" (toPatternMatch x splitName arity) e
 
 reify' (EIte i t e) =
   parens $ do
@@ -508,8 +524,14 @@ reify' (PAtom op lhs rhs)  =
 
 reify' e                  = error (show e)
 
-reify :: Expr -> String
-reify e = evalState (reify' e) (ReifyContext M.empty False Nothing Nothing)
+reify :: Expr -> (String, ImplicitCons)
+reify e =
+  let
+    (e',rs) = runState (reify' e) (ReifyContext M.empty False Nothing Nothing M.empty)
+  in
+    -- (e', rImplicitCons rs)
+    -- (show (toFix e), M.empty)
+    (show (toFix e) ++ "\n\n<--------->\n\n" ++ e', M.empty)
 
 uselessPatternMatch :: Knowledge -> Expr -> Bool
 uselessPatternMatch γ (EApp (EVar f) arg) | (EVar g, _) <- splitEApp arg =
@@ -549,7 +571,7 @@ generateEqs γ ictx facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFac
     simplified        = S.map simplifyEQ facts'
     usefulFacts       = S.filter canUse simplified
     canUse (lhs, rhs) = not (uselessPatternMatch γ lhs || uselessPatternMatch γ rhs || lhs == rhs)
-    toEq (lhs, rhs)   = "(" ++ reify lhs ++ " ==. " ++ reify rhs ++ ")"
+    toEq (lhs, rhs)   = undefined -- "(" ++ reify lhs ++ " ==. " ++ reify rhs ++ ")"
 
 type EvalOneResult = (Facts, EvAccum)
 
@@ -587,6 +609,29 @@ notGuardedApps = go
     go (PExist _ _)    = []
     go (PGrad{})       = []
 
+
+unANF :: [Expr] -> Expr -> Expr
+unANF exprs e =
+  let
+    e'        = subst' e
+    subst' ee =
+      let ee' = subst (Su $ anfMap exprs) ee
+      in if ee == ee' then ee else subst' ee'
+  in
+    e'
+
+anfMap :: [Expr] -> M.HashMap Symbol Expr
+anfMap exprs =
+  let
+    ints      = L.nub $ concatMap subsFromAssm exprs
+    ints'     = map best $ L.groupBy (\ a b -> fst a == fst b) ints
+      where
+        best [x]  = x
+        best xs   = head $ filter (notVar . snd) xs
+        notVar (EVar _) = False
+        notVar _        = True
+  in
+    M.fromList ints'
 
 
 subsFromAssm :: Expr -> [(Symbol, Expr)]
@@ -662,13 +707,8 @@ eval γ ctx path =
     getRWs :: EvalST [(Expr, TermOrigin)]
     getRWs =
       let
-        ints      = concatMap subsFromAssm (S.toList $ icAssms ctx)
-        su        = Su (M.fromList ints)
-        e'        = subst' e
-        subst' ee =
-          let ee' = subst su ee
-          in if ee == ee' then ee else subst' ee'
-        rwArgs = RWArgs (isValid γ) (knRWTerminationOpts γ)
+        e'        = unANF (S.toList $ icAssms ctx) e
+        rwArgs    = RWArgs (isValid γ) (knRWTerminationOpts γ)
         getRWs' s =
           Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrite rwArgs path s) autorws
       in concat <$> mapM getRWs' (subExprs e')

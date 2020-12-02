@@ -28,7 +28,7 @@ module Language.Fixpoint.Solver.Monad
        )
        where
 
-import           Language.Fixpoint.Solver.PLE (pleID', reify)
+import           Language.Fixpoint.Solver.PLE (anfMap, unANF, pleID', reify, matchedElement)
 import           Language.Fixpoint.Utils.Progress
 import qualified Language.Fixpoint.Types.Config  as C
 import           Language.Fixpoint.Types.Config  (Config)
@@ -50,12 +50,14 @@ import           Data.List            (intercalate, find, nub, partition)
 -- import           Data.Char            (isUpper)
 import           Control.Monad.State.Strict
 import qualified Data.HashMap.Strict as M
-import           Data.Maybe (fromJust, isJust, catMaybes)
+import           Data.Maybe (maybeToList, fromJust, isJust, catMaybes)
 import           Control.Exception.Base (bracket)
 import Text.Printf
 import Data.Hashable (Hashable(hash))
 import qualified Data.Text as T
 import Language.Fixpoint.SortCheck (unElab)
+import Language.Fixpoint.Types (symbolText, Symbol, symbol, Expr(..), eApps, Subst(..), Subable(subst))
+import Debug.Trace (trace)
 
 --------------------------------------------------------------------------------
 -- | Solver Monadic API --------------------------------------------------------
@@ -186,13 +188,13 @@ splitPLEConstraints p =
 filterValid_ :: F.SrcSpan -> F.Expr -> F.Cand a -> Context -> IO [a]
 filterValid_ sp p qs me = catMaybes <$> do
   printf "%d soft constraints, %d hard\n" (length soft) (length hard)
-  -- mapM_ print hard
+  -- mapM_ print (map unElab hard)
   mapM_ (smtAssert' me) (nub soft)
   smtAssert me (F.PAnd hard)
   -- smtAssert me p
   forM qs $ \(q, x) ->
     smtBracketAt sp me "filterValidRHS" $ do
-      printf "Check: %s\n" (reify (unElab q))
+      printf "Check: %s\n" (fst $ reify (unElab q))
       smtAssert me (F.PNot q)
       valid <- smtCheckUnsat me
       when valid $ do
@@ -202,17 +204,35 @@ filterValid_ sp p qs me = catMaybes <$> do
         -- printf "Unsat Core: %s\n" (show result)
       return $ if valid then Just x else Nothing
   where
+    dsSubst =
+        trace (show $ anfMap hard) $ Su $ M.fromList $ [ (s, r) | (F.EEq (F.EVar anf) (F.EVar s)) <- hard'
+                            , T.isPrefixOf "ds_" $ symbolText s
+                            , r <- maybeToList $ M.lookup anf (anfMap hard) ]
     (soft, hard) = splitPLEConstraints p
+    soft' = map unElab soft
+    hard' = map unElab hard
     toConstraintStr smtAssertID =
       let
         hash'    = read (drop 2 $ T.unpack smtAssertID)
         (Just c) = find (\c -> hash c == hash') soft
       in
-        reifyEQ (unElab c)
+        reifyEQ (subst dsSubst $ unElab $ unANF (soft ++ hard) c)
     proof assertIDs = intercalate " ?\n" (map toConstraintStr assertIDs)
     -- proof assertIDs = intercalate " ?\n" (map (reifyEQ . unElab) soft)
+
     reifyEQ :: F.Expr -> String
-    reifyEQ (F.EEq lhs rhs) = printf "(%s ==. %s)" (reify lhs) (reify rhs)
+    reifyEQ (F.EEq lhs rhs) =
+      let
+        (rhs', implicits) = reify rhs
+        implicits' = Su (M.mapWithKey go implicits)
+          where
+            go :: Symbol -> (T.Text, Int) -> Expr
+            go e (name, arity) =
+              eApps (EVar (symbol name)) (map (EVar . symbol . matchedElement (EVar e) name) [1..arity])
+        (lhs', _)         = reify (subst implicits' lhs)
+      in
+        printf "(%s ==. %s)" lhs' rhs'
+    reifyEQ _ = undefined
 
 
 

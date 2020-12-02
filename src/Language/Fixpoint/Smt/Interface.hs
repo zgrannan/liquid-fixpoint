@@ -435,6 +435,7 @@ z3_432_options
   = [ "(set-option :auto-config false)"
     , "(set-option :model true)"
     , "(set-option :model.partial false)"
+    , "(set-option :smt.core.minimize true)"
     , "(set-option :produce-unsat-cores true)"]
 
 z3_options :: [LT.Text]
@@ -442,6 +443,7 @@ z3_options
   = [ "(set-option :auto-config false)"
     , "(set-option :model true)"
     , "(set-option :model-partial false)"
+    , "(set-option :smt.core.minimize true)"
     , "(set-option :produce-unsat-cores true)"]
 
 
