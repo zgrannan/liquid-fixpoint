@@ -443,7 +443,20 @@ toPatternMatch e splitName arity =
   in
     printf "%s %s" (T.unpack splitName) (unwords args)
 
+rSimp e = fix (Vis.mapExpr simpSelect) e where
+  fix f e = if e == e' then e else fix f e' where e' = f e
+
+simpSelect :: Expr -> Expr
+simpSelect (EApp (EVar f) e@EApp{} )
+  | [_, c] <- splitOn "lqdc##$select##" (symbolText f)
+  , [name, index] <- splitOn "##" c
+  , (EVar name', args) <- splitEApp e
+  ,  name == symbolText name'
+  = args !! (read (T.unpack index) - 1)
+simpSelect e = e
+
 reify' :: Expr -> Reify String
+-- reify' e | simpSelect e /= e = reify' $ simpSelect e
 reify' (EApp (EVar f) (EVar x) )
   | [_, c] <- splitOn "lqdc##$select##" (symbolText f)
   , [name, index] <- splitOn "##" c
@@ -456,7 +469,7 @@ reify' (EApp (EVar f) (EVar x) )
                 , rSplits = withSplit (EVar x) name index' (rSplits rc)
                 }
         else
-          put rc{ rImplicitCons = withImplicitCons x name index' (rImplicitCons rc) }
+          trace "NOOOOOOOOOOOOO" $ put rc{ rImplicitCons = withImplicitCons x name index' (rImplicitCons rc) }
       return $ matchedElement (EVar x) name index'
 -- reify' (EApp (EVar f) x)  | Just test <- unTestSymbol f =
 --   parens $ "case " ++ reify' rc x ++ " of { " ++ testStr test ++ " -> True ; _ -> False }"
@@ -478,13 +491,16 @@ reify' (EBin op t1 t2) =
     rhs       <- reifyP' t2
     return $ printf "%s %s %s" lhs (show $ toFix op) rhs
 
-reify' (EIte (EApp (EVar f) x) t e) | isTestSymbol f =
+reify' (EIte cond@(EApp (EVar f) x) t e) | isTestSymbol f =
   parens $ do
     rc <- get
+    -- trace ("COND: " ++ show (toFix cond)) put rc{rSplitExpr = Just x}
     put rc{rSplitExpr = Just x}
-    lhs <- reifyP' t
+    lhs <- -- trace ("LHS: " ++ show (toFix t))
+           (reifyP' t)
     lhsSplit <- gets rCurrentSplit
-    rhs <- reifyP' e
+    rhs <- -- trace ("RHS: " ++ show (toFix e))
+           (reifyP' e)
     rhsSplit <- gets rCurrentSplit
     mkCase [(lhs, lhsSplit), (rhs, rhsSplit)]
   where
@@ -501,7 +517,6 @@ reify' (EIte (EApp (EVar f) x) t e) | isTestSymbol f =
         splits <- gets rSplits
         let (Just cons)  = M.lookup x splits
         let (Just arity) = M.lookup splitName cons
-        let args = map (matchedElement x splitName) [1..arity]
         return $ printf "%s -> %s" (toPatternMatch x splitName arity) e
 
 reify' (EIte i t e) =
@@ -527,11 +542,11 @@ reify' e                  = error (show e)
 reify :: Expr -> (String, ImplicitCons)
 reify e =
   let
-    (e',rs) = runState (reify' e) (ReifyContext M.empty False Nothing Nothing M.empty)
+    (e',rs) = runState (reify' (rSimp e)) (ReifyContext M.empty False Nothing Nothing M.empty)
   in
     -- (e', rImplicitCons rs)
-    -- (show (toFix e), M.empty)
-    (show (toFix e) ++ "\n\n<--------->\n\n" ++ e', M.empty)
+    (e', M.empty)
+    -- (show (toFix e) ++ "\n\n<--------->\n\n" ++ e', M.empty)
 
 uselessPatternMatch :: Knowledge -> Expr -> Bool
 uselessPatternMatch γ (EApp (EVar f) arg) | (EVar g, _) <- splitEApp arg =

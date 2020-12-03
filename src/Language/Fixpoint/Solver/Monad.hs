@@ -205,7 +205,8 @@ filterValid_ sp p qs me = catMaybes <$> do
       return $ if valid then Just x else Nothing
   where
     dsSubst =
-        trace (show $ anfMap hard) $ Su $ M.fromList $ [ (s, r) | (F.EEq (F.EVar anf) (F.EVar s)) <- hard'
+        -- trace (show $ anfMap hard) $
+        Su $ M.fromList $ [ (s, r) | (F.EEq (F.EVar anf) (F.EVar s)) <- hard'
                             , T.isPrefixOf "ds_" $ symbolText s
                             , r <- maybeToList $ M.lookup anf (anfMap hard) ]
     (soft, hard) = splitPLEConstraints p
