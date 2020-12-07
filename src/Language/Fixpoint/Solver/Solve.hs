@@ -134,7 +134,7 @@ refineC _i s c
   | null rhs  = return (False, s)
   | otherwise = do be     <- getBinds
                    let lhs = S.lhsPred be s c
-                   kqs    <- filterValid (cstrSpan c) lhs rhs
+                   kqs    <- filterValid (cstrSpan c) Nothing lhs rhs
                    return  $ S.update s ks kqs
   where
     _ci       = F.subcId c
@@ -212,7 +212,7 @@ minimizeConjuncts :: F.Expr -> SolveM F.Expr
 minimizeConjuncts p = F.pAnd <$> go (F.conjuncts p) []
   where
     go []     acc   = return acc
-    go (p:ps) acc   = do b <- isValid F.dummySpan (F.pAnd (acc ++ ps)) p
+    go (p:ps) acc   = do b <- isValid F.dummySpan Nothing (F.pAnd (acc ++ ps)) p
                          if b then go ps acc
                               else go ps (p:acc)
 
@@ -225,7 +225,7 @@ isUnsat s c = do
   let lp = S.lhsPred be s c
   -- lift   $ printf "isUnsat %s" (show lp)
   let rp = rhsPred        c
-  res   <- not <$> isValid (cstrSpan c) lp rp
+  res   <- not <$> isValid (cstrSpan c) (Just $ F.subcId c) lp rp
   lift   $ whenLoud $ showUnsat res (F.subcId c) lp rp
   return res
 
@@ -245,9 +245,9 @@ rhsPred c
   | otherwise  = errorstar $ "rhsPred on non-target: " ++ show (F.sid c)
 
 --------------------------------------------------------------------------------
-isValid :: F.SrcSpan -> F.Expr -> F.Expr -> SolveM Bool
+isValid :: F.SrcSpan -> Maybe SubcId -> F.Expr -> F.Expr -> SolveM Bool
 --------------------------------------------------------------------------------
-isValid sp p q = (not . null) <$> filterValid sp p [(q, ())]
+isValid sp subcId p q = (not . null) <$> filterValid sp subcId p [(q, ())]
 
 cstrSpan :: (F.Loc a) => F.SimpC a -> F.SrcSpan
 cstrSpan = F.srcSpan . F.sinfo

@@ -20,7 +20,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
 
 module Language.Fixpoint.Solver.PLE
-  (instantiate, pleID', reify, matchedElement, unANF, anfMap) where
+  (instantiate, pleID', unANF, anfMap) where
 
 import           Language.Fixpoint.Types hiding (simplify)
 import           Language.Fixpoint.Types.Config  as FC
@@ -40,11 +40,8 @@ import qualified Data.HashMap.Strict  as M
 import qualified Data.HashSet         as S
 import qualified Data.List            as L
 import qualified Data.Maybe           as Mb
-import           Data.Text (Text, splitOn, unpack)
 import           Debug.Trace          (trace)
 import Text.Printf (printf)
-import Data.Hashable (Hashable(hash))
-import qualified Data.Text as T
 
 mytracepp :: (PPrint a) => String -> a -> a
 mytracepp = notracepp
@@ -141,8 +138,14 @@ ple1 (InstEnv {..}) ctx i res =
 evalToSMT :: String -> Config -> SMT.Context -> (Expr, Expr) -> Pred
 evalToSMT msg cfg ctx (e1,e2) = toSMT ("evalToSMT:" ++ msg) cfg ctx [] (EEq e1 e2)
 
+facts = [ (EApp (EVar "Compiler.interp") (EVar "e##a1BH"),EIte (EApp (EVar "is$Compiler.Val") (EVar "e##a1BH")) (EApp (EVar "Compiler.Val##lqdc##$select##Compiler.Val##1") (EVar "e##a1BH")) (EBin Plus (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##1") (EVar "e##a1BH"))) (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##2") (EVar "e##a1BH")))))
+  ,(EApp (EApp (EVar "Compiler.run") (EVar "Compiler.HALT")) (EApp (EApp (EVar "Compiler.Arg") (EIte (EApp (EVar "is$Compiler.Val") (EVar "e##a1BH")) (EApp (EVar "Compiler.Val##lqdc##$select##Compiler.Val##1") (EVar "e##a1BH")) (EBin Plus (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##1") (EVar "e##a1BH"))) (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##2") (EVar "e##a1BH")))))) (EVar "Compiler.Emp")),EIte (EApp (EVar "is$Compiler.Val") (EVar "e##a1BH")) (EApp (EVar "Compiler.Val##lqdc##$select##Compiler.Val##1") (EVar "e##a1BH")) (EBin Plus (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##1") (EVar "e##a1BH"))) (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##2") (EVar "e##a1BH")))))
+  ,(EApp (EVar "Compiler.compileAndRun") (EVar "e##a1BH"),EApp (EApp (EVar "Compiler.run") (EApp (EApp (EVar "Compiler.compileC") (EVar "e##a1BH")) (EVar "Compiler.HALT"))) (EVar "Compiler.Emp")) ]
+
+
+
 evalCandsLoop :: Config -> ICtx -> SMT.Context -> Knowledge -> EvalEnv -> IO ICtx
-evalCandsLoop cfg ictx0 ctx γ env = go mempty ictx0
+evalCandsLoop cfg ictx0 ctx γ env = go ictx0
   where
     withRewrites exprs =
       let
@@ -150,21 +153,28 @@ evalCandsLoop cfg ictx0 ctx γ env = go mempty ictx0
                             ,  e <- S.toList (snd `S.map` exprs)]
       in
         exprs <> (S.fromList $ concat rws)
-    showProof ictx facts =
-      case icSubcId ictx0 of
-        Just cid | S.member cid (knShowProofs γ) ->
-          liftIO $ putStrLn (generateEqs γ ictx facts)
-        _ -> return ()
-    go facts ictx | S.null (icCands ictx) = showProof ictx facts >> return ictx
-    go facts ictx = do
+
+    getRewrites e = [ e' | rw <- knSims γ , (_, e') <- rewrite e rw ]
+    checkFact ictx (lhs, rhs) = do
+      result <- evalStateT (simplify γ ictx <$> evalStep γ ictx lhs) env
+      return $ result == rhs || (rhs `L.elem` getRewrites lhs)
+    go ictx | Just 16 <- icSubcId ictx = do
+                oks <- mapM (checkFact ictx) facts
+                putStrLn $ "OKS------ " ++ show oks
+                if and oks
+                  then return $ ictx{icEquals = S.union (S.fromList facts) (icEquals ictx)}
+                  else go' ictx
+    go ictx = go' ictx
+    go' ictx | S.null (icCands ictx) = return ictx
+    go' ictx = do
                   let cands = icCands ictx
                   let env' = env {  evAccum    = icEquals   ictx <> evAccum env }
                   evalResults <- SMT.smtBracket ctx "PLE.evaluate" $ do
                                SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx))
                                mapM (evalOne γ env' ictx) (S.toList cands)
-                  let (facts', us) = mconcat evalResults
+                  let us = mconcat evalResults
                   if S.null (us `S.difference` icEquals ictx)
-                        then showProof ictx facts >> return ictx
+                        then return ictx
                         else do  let oks      = fst `S.map` us
                                  let us'      = withRewrites us
                                  let eqsSMT   = evalToSMT "evalCandsLoop" cfg ctx `S.map` us'
@@ -172,7 +182,7 @@ evalCandsLoop cfg ictx0 ctx γ env = go mempty ictx0
                                                      , icEquals = icEquals ictx <> us'
                                                      , icAssms  = icAssms  ictx <> S.filter (not . isTautoPred) eqsSMT }
                                  let newcands = mconcat (makeCandidates γ ictx' <$> S.toList (cands <> (snd `S.map` us)))
-                                 go (S.union facts facts') (ictx' { icCands = S.fromList newcands})
+                                 go (ictx' { icCands = S.fromList newcands})
 
 
 
@@ -375,228 +385,13 @@ getAutoRws γ ctx =
     cid <- icSubcId ctx
     M.lookup cid $ knAutoRWs γ
 
-testStr :: Symbol -> String
-testStr test = if symbolString test == "GHC.Types.[]" then"[]" else symbolString test ++ "{}"
-
-type Constructors = M.HashMap Text Int
-type Splits = M.HashMap Expr Constructors
-type ImplicitCons = M.HashMap Symbol (Text, Int)
-
-data ReifyContext = ReifyContext
-  {  rSplits       :: Splits
-  ,  rParens       :: Bool
-  ,  rSplitExpr    :: Maybe Expr
-  ,  rCurrentSplit :: Maybe Text
-  ,  rImplicitCons :: ImplicitCons
-  }
-
-parens' :: Bool -> String -> String
-parens' True  = printf "(%s)"
-parens' False = id
-
-parens :: Reify String -> Reify String
-parens rs = do
-  useParens <- gets rParens
-  parens' useParens <$> rs
-
-reifyP' :: Expr -> Reify String
-reifyP' e = modify (\rc -> rc{rParens = True}) >> reify' e
-
-reifyNP' :: Expr -> Reify String
-reifyNP' e = modify (\rc -> rc{rParens = False}) >> reify' e
-
-withImplicitCons :: Symbol -> Text -> Int -> ImplicitCons -> ImplicitCons
-withImplicitCons e s i ic = ic'
-  where
-    ic' = case M.lookup e ic of
-      Just (_, i') | i' >= i -> ic
-      _                      -> M.insert e (s,i) ic
-
-
-withSplit :: Expr -> Text -> Int -> Splits -> Splits
-withSplit e s i splits = splits'
-  where
-    splits' = case M.lookup e splits of
-      Just consMap ->
-        case M.lookup s consMap of
-          Just i' | i <= i' -> splits
-          _ ->
-            let
-              consMap' = M.insert s i consMap
-            in
-              M.insert e consMap' splits
-      Nothing -> M.insert e (M.singleton s i) splits
-
-matchedElement :: Expr -> Text -> Int -> String
-matchedElement e s = printf "m%d_%s_%d" (abs $ hash e) (sanitize $ T.unpack s)
-  where
-    sanitize = map schar
-    schar '.' = '_'
-    schar x   = x
-
-type Reify a = State ReifyContext a
-
-toPatternMatch :: Expr -> Text -> Int -> String
-toPatternMatch e splitName arity =
-  let
-    args = map (matchedElement e splitName) [1..arity]
-  in
-    printf "%s %s" (T.unpack splitName) (unwords args)
-
-rSimp e = fix (Vis.mapExpr simpSelect) e where
-  fix f e = if e == e' then e else fix f e' where e' = f e
-
-simpSelect :: Expr -> Expr
-simpSelect (EApp (EVar f) e@EApp{} )
-  | [_, c] <- splitOn "lqdc##$select##" (symbolText f)
-  , [name, index] <- splitOn "##" c
-  , (EVar name', args) <- splitEApp e
-  ,  name == symbolText name'
-  = args !! (read (T.unpack index) - 1)
-simpSelect e = e
-
-reify' :: Expr -> Reify String
--- reify' e | simpSelect e /= e = reify' $ simpSelect e
-reify' (EApp (EVar f) (EVar x) )
-  | [_, c] <- splitOn "lqdc##$select##" (symbolText f)
-  , [name, index] <- splitOn "##" c
-  = do
-      let index' = read (T.unpack index)
-      rc <- get
-      if rSplitExpr rc == Just (EVar x)
-        then
-          put rc{ rCurrentSplit = Just name
-                , rSplits = withSplit (EVar x) name index' (rSplits rc)
-                }
-        else
-          trace "NOOOOOOOOOOOOO" $ put rc{ rImplicitCons = withImplicitCons x name index' (rImplicitCons rc) }
-      return $ matchedElement (EVar x) name index'
--- reify' (EApp (EVar f) x)  | Just test <- unTestSymbol f =
---   parens $ "case " ++ reify' rc x ++ " of { " ++ testStr test ++ " -> True ; _ -> False }"
-reify' e@(EApp _ _) =
-  let (f, args) = splitEApp e
-  in
-    parens $ do
-      f'        <- reifyP' f
-      args'     <- mapM reifyP' args
-      return $ unwords (f' : args')
-reify' (EVar x)            = -- return $ symbolString x
-                             return $ takeWhile (/= '#') $ symbolString x
-reify' (ECon (I c))        = return $ show c
-reify' PFalse              = return "False"
-reify' PTrue               = return "True"
-reify' (EBin op t1 t2) =
-  parens $ do
-    lhs       <- reifyP' t1
-    rhs       <- reifyP' t2
-    return $ printf "%s %s %s" lhs (show $ toFix op) rhs
-
-reify' (EIte cond@(EApp (EVar f) x) t e) | isTestSymbol f =
-  parens $ do
-    rc <- get
-    -- trace ("COND: " ++ show (toFix cond)) put rc{rSplitExpr = Just x}
-    put rc{rSplitExpr = Just x}
-    lhs <- -- trace ("LHS: " ++ show (toFix t))
-           (reifyP' t)
-    lhsSplit <- gets rCurrentSplit
-    rhs <- -- trace ("RHS: " ++ show (toFix e))
-           (reifyP' e)
-    rhsSplit <- gets rCurrentSplit
-    mkCase [(lhs, lhsSplit), (rhs, rhsSplit)]
-  where
-    mkCase :: [(String, Maybe Text)] -> Reify String
-    mkCase splits =
-      do
-        x'    <- reify' x
-        cases <- mapM mkCase' splits
-        return $ printf "case %s of { %s }" x' (L.intercalate " ; "  cases)
-    mkCase' :: (String, Maybe Text) -> Reify String
-    mkCase' (e, Nothing) = return $ printf "_ -> %s" e
-    mkCase' (e, Just splitName) =
-      do
-        splits <- gets rSplits
-        let (Just cons)  = M.lookup x splits
-        let (Just arity) = M.lookup splitName cons
-        return $ printf "%s -> %s" (toPatternMatch x splitName arity) e
-
-reify' (EIte i t e) =
-  parens $ do
-    i' <- reifyNP' i
-    t' <- reifyNP' t
-    e' <- reifyNP' e
-    return $ printf "if %s then %s else %s" i' t' e'
-
-reify' (PAtom op lhs rhs)  =
-  parens $ do
-    lhs' <- reify' lhs
-    rhs' <- reify' rhs
-    return $ printf "%s %s %s" lhs' (opString op) rhs'
-    where
-      opString :: Brel -> String
-      opString Eq = "=="
-      opString Ne = "/="
-      opString op = show (toFix op)
-
-reify' e                  = error (show e)
-
-reify :: Expr -> (String, ImplicitCons)
-reify e =
-  let
-    (e',rs) = runState (reify' (rSimp e)) (ReifyContext M.empty False Nothing Nothing M.empty)
-  in
-    -- (e', rImplicitCons rs)
-    (e', M.empty)
-    -- (show (toFix e) ++ "\n\n<--------->\n\n" ++ e', M.empty)
-
-uselessPatternMatch :: Knowledge -> Expr -> Bool
-uselessPatternMatch γ (EApp (EVar f) arg) | (EVar g, _) <- splitEApp arg =
-  isTestSymbol f && S.member g (knDCs γ)
-uselessPatternMatch _ _ = False
-
-normalForm :: Expr -> Facts -> Expr
-normalForm e0 f = nf [e0] where
-  nf :: [Expr] -> Expr
-  nf [] = undefined
-  nf path@(e:_) = case S.toList (S.filter (\(lhs, rhs) -> lhs == e && rhs /= e) f) of
-    [(_, e')] | L.notElem e' path -> nf (e':path)
-    []                            -> e
-    _                             -> error "Nonterminating?"
-
-
-{-
-The algorithm:
-
-1. Run `simplify` on all facts (for constant folding, selector elimination, etc)
-2. For each fact, evaluate it to it's "normal form" (i.e the PLE fixpoint)
-3. Re-simplify the facts, in case the normal form enables new simplifications
-4. Eliminate redundant facts (useless pattern matches, x == x)
--}
-generateEqs :: Knowledge -> ICtx -> Facts -> String
-generateEqs γ ictx facts = L.intercalate " ?\n" (S.toList (S.map toEq usefulFacts))
-  where
-    simplifyEQ (lhs, rhs) =
-      let
-        rhs'    = Vis.mapExpr (flip normalForm facts') rhs
-        factsL  = S.filter ((/=) lhs . fst) facts'
-        lhs'    = Vis.mapExpr (flip normalForm factsL) lhs
-      in
-        (simplify γ ictx lhs', simplify γ ictx rhs')
-    both f (x,y)      = (f x, f y)
-    facts'            = S.map (both $ simplify γ ictx) facts
-    simplified        = S.map simplifyEQ facts'
-    usefulFacts       = S.filter canUse simplified
-    canUse (lhs, rhs) = not (uselessPatternMatch γ lhs || uselessPatternMatch γ rhs || lhs == rhs)
-    toEq (lhs, rhs)   = undefined -- "(" ++ reify lhs ++ " ==. " ++ reify rhs ++ ")"
-
-type EvalOneResult = (Facts, EvAccum)
+type EvalOneResult = EvAccum
 
 evalOne :: Knowledge -> EvalEnv -> ICtx -> Expr -> IO EvalOneResult
 -- evalOne γ env ctx e | null $ getAutoRws γ ctx = do
 --     (e',st) <- runStateT (fastEval γ ctx e) env
 --     return (evFacts st, evAccum st)
-evalOne γ env ctx e = do
-  result <- execStateT (eval γ ctx [(e, PLE)]) env
-  return (evFacts result, evAccum result)
+evalOne γ env ctx e = evAccum <$> execStateT (eval γ ctx [(e, PLE)]) env
 
 notGuardedApps :: Expr -> [Expr]
 notGuardedApps = go
@@ -641,8 +436,7 @@ anfMap exprs =
     ints      = L.nub $ concatMap subsFromAssm exprs
     ints'     = map best $ L.groupBy (\ a b -> fst a == fst b) ints
       where
-        best [x]  = x
-        best xs   = head $ filter (notVar . snd) xs
+        best xs = Mb.fromMaybe (head xs) (L.find (notVar . snd) xs)
         notVar (EVar _) = False
         notVar _        = True
   in
@@ -748,7 +542,16 @@ evalStep γ ctx e@(EApp _ _)     = case splitEApp e of
               then return (eApps f' es')
               else evalApp γ ctx (eApps f' es') (f',es')
 evalStep γ ctx e@(PAtom r e1 e2) =
-  fromMaybeM (PAtom r <$> evalStep γ ctx e1 <*> evalStep γ ctx e2) (evalBool γ e)
+  do
+    e1' <- evalStep γ ctx e1
+    if e1' /= e1
+      then return $ PAtom r e1' e2
+      else
+        do
+          e2' <- evalStep γ ctx e2
+          if e2' /= e2
+            then return $ PAtom r e1 e2'
+            else fromMaybeM (return e) (evalBool γ e)
 evalStep γ ctx (ENeg e) = ENeg <$> evalStep γ ctx e
 evalStep γ ctx (EBin o e1 e2)   = do
   e1' <- evalStep γ ctx e1

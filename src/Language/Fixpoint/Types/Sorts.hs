@@ -76,6 +76,7 @@ module Language.Fixpoint.Types.Sorts (
   , tceInsert
   , tceInsertWith
   , tceMap
+  , TCInfo(..)
   ) where
 
 import qualified Data.Binary as B

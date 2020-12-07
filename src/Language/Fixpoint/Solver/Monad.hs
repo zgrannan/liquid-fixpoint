@@ -28,7 +28,7 @@ module Language.Fixpoint.Solver.Monad
        )
        where
 
-import           Language.Fixpoint.Solver.PLE (anfMap, unANF, pleID', reify, matchedElement)
+import           Language.Fixpoint.Solver.PLE (pleID')
 import           Language.Fixpoint.Utils.Progress
 import qualified Language.Fixpoint.Types.Config  as C
 import           Language.Fixpoint.Types.Config  (Config)
@@ -45,7 +45,7 @@ import           Language.Fixpoint.Solver.Sanitize
 import           Language.Fixpoint.Solver.Stats
 import           Language.Fixpoint.Graph.Types (SolverInfo (..))
 -- import           Language.Fixpoint.Solver.Solution
--- import           Data.Maybe           (catMaybes)
+-- import           ata.Maybe           (catMaybes)
 import           Data.List            (intercalate, find, nub, partition)
 -- import           Data.Char            (isUpper)
 import           Control.Monad.State.Strict
@@ -107,7 +107,7 @@ getIter :: SolveM Int
 --------------------------------------------------------------------------------
 getIter = numIter . ssStats <$> get
 
---------------------------------------------------------------------------------
+----------------------------------------------------------------------------
 incIter, incBrkt :: SolveM ()
 --------------------------------------------------------------------------------
 incIter   = modifyStats $ \s -> s {numIter = 1 + numIter s}
@@ -160,12 +160,12 @@ filterRequired = error "TBD:filterRequired"
 --------------------------------------------------------------------------------
 -- | `filterValid p [(x1, q1),...,(xn, qn)]` returns the list `[ xi | p => qi]`
 --------------------------------------------------------------------------------
-filterValid :: F.SrcSpan -> F.Expr -> F.Cand a -> SolveM [a]
+filterValid :: F.SrcSpan -> Maybe F.SubcId -> F.Expr -> F.Cand a -> SolveM [a]
 --------------------------------------------------------------------------------
-filterValid sp p qs = do
+filterValid sp id p qs = do
   qs' <- withContext $ \me ->
            smtBracket me "filterValidLHS" $
-             filterValid_ sp p qs me
+             filterValid_ sp id p qs me
   -- stats
   incBrkt
   incChck (length qs)
@@ -185,56 +185,34 @@ splitPLEConstraints p =
     isPLEConstraint = isJust . getPLEConstraint
 
 
-filterValid_ :: F.SrcSpan -> F.Expr -> F.Cand a -> Context -> IO [a]
-filterValid_ sp p qs me = catMaybes <$> do
-  printf "%d soft constraints, %d hard\n" (length soft) (length hard)
+filterValid_ :: F.SrcSpan -> Maybe F.SubcId -> F.Expr -> F.Cand a -> Context -> IO [a]
+filterValid_ sp subcID p qs me = catMaybes <$> do
+  -- printf "%d soft constraints, %d hard\n" (length soft) (length hard)
   -- mapM_ print (map unElab hard)
   mapM_ (smtAssert' me) (nub soft)
   smtAssert me (F.PAnd hard)
   -- smtAssert me p
   forM qs $ \(q, x) ->
     smtBracketAt sp me "filterValidRHS" $ do
-      printf "Check: %s\n" (fst $ reify (unElab q))
+      -- printf "Check: %s\n" (fst $ reify (unElab q))
       smtAssert me (F.PNot q)
       valid <- smtCheckUnsat me
       when valid $ do
         (Asserts assertIDs) <- command me GetUnsatCore
-        printf "Unsat Core: %s\n" (show assertIDs)
-        putStrLn (proof assertIDs)
-        -- printf "Unsat Core: %s\n" (show result)
+        printf "Unsat Core %s: %s\n" (show subcID) (show assertIDs)
+        printFacts $ map (unElab . getConstraint) assertIDs
       return $ if valid then Just x else Nothing
   where
-    dsSubst =
-        -- trace (show $ anfMap hard) $
-        Su $ M.fromList $ [ (s, r) | (F.EEq (F.EVar anf) (F.EVar s)) <- hard'
-                            , T.isPrefixOf "ds_" $ symbolText s
-                            , r <- maybeToList $ M.lookup anf (anfMap hard) ]
+    printFacts facts = printf "S.fromList [ %s ]\n\n" $ intercalate "\n," (map toPair facts)
+    toPair (F.EEq lhs rhs) = show (lhs, rhs)
+
     (soft, hard) = splitPLEConstraints p
-    soft' = map unElab soft
-    hard' = map unElab hard
-    toConstraintStr smtAssertID =
+    getConstraint smtAssertID =
       let
         hash'    = read (drop 2 $ T.unpack smtAssertID)
         (Just c) = find (\c -> hash c == hash') soft
       in
-        reifyEQ (subst dsSubst $ unElab $ unANF (soft ++ hard) c)
-    proof assertIDs = intercalate " ?\n" (map toConstraintStr assertIDs)
-    -- proof assertIDs = intercalate " ?\n" (map (reifyEQ . unElab) soft)
-
-    reifyEQ :: F.Expr -> String
-    reifyEQ (F.EEq lhs rhs) =
-      let
-        (rhs', implicits) = reify rhs
-        implicits' = Su (M.mapWithKey go implicits)
-          where
-            go :: Symbol -> (T.Text, Int) -> Expr
-            go e (name, arity) =
-              eApps (EVar (symbol name)) (map (EVar . symbol . matchedElement (EVar e) name) [1..arity])
-        (lhs', _)         = reify (subst implicits' lhs)
-      in
-        printf "(%s ==. %s)" lhs' rhs'
-    reifyEQ _ = undefined
-
+        c
 
 
 --------------------------------------------------------------------------------
