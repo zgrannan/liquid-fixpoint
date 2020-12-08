@@ -42,6 +42,10 @@ import qualified Data.List            as L
 import qualified Data.Maybe           as Mb
 import           Debug.Trace          (trace)
 import Text.Printf (printf)
+import System.IO
+import System.Directory (doesFileExist)
+import Language.Fixpoint.Utils.Files
+import qualified Data.Binary as B
 
 mytracepp :: (PPrint a) => String -> a -> a
 mytracepp = notracepp
@@ -138,12 +142,6 @@ ple1 (InstEnv {..}) ctx i res =
 evalToSMT :: String -> Config -> SMT.Context -> (Expr, Expr) -> Pred
 evalToSMT msg cfg ctx (e1,e2) = toSMT ("evalToSMT:" ++ msg) cfg ctx [] (EEq e1 e2)
 
-facts = [ (EApp (EVar "Compiler.interp") (EVar "e##a1BH"),EIte (EApp (EVar "is$Compiler.Val") (EVar "e##a1BH")) (EApp (EVar "Compiler.Val##lqdc##$select##Compiler.Val##1") (EVar "e##a1BH")) (EBin Plus (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##1") (EVar "e##a1BH"))) (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##2") (EVar "e##a1BH")))))
-  ,(EApp (EApp (EVar "Compiler.run") (EVar "Compiler.HALT")) (EApp (EApp (EVar "Compiler.Arg") (EIte (EApp (EVar "is$Compiler.Val") (EVar "e##a1BH")) (EApp (EVar "Compiler.Val##lqdc##$select##Compiler.Val##1") (EVar "e##a1BH")) (EBin Plus (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##1") (EVar "e##a1BH"))) (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##2") (EVar "e##a1BH")))))) (EVar "Compiler.Emp")),EIte (EApp (EVar "is$Compiler.Val") (EVar "e##a1BH")) (EApp (EVar "Compiler.Val##lqdc##$select##Compiler.Val##1") (EVar "e##a1BH")) (EBin Plus (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##1") (EVar "e##a1BH"))) (EApp (EVar "Compiler.interp") (EApp (EVar "Compiler.Add##lqdc##$select##Compiler.Add##2") (EVar "e##a1BH")))))
-  ,(EApp (EVar "Compiler.compileAndRun") (EVar "e##a1BH"),EApp (EApp (EVar "Compiler.run") (EApp (EApp (EVar "Compiler.compileC") (EVar "e##a1BH")) (EVar "Compiler.HALT"))) (EVar "Compiler.Emp")) ]
-
-
-
 evalCandsLoop :: Config -> ICtx -> SMT.Context -> Knowledge -> EvalEnv -> IO ICtx
 evalCandsLoop cfg ictx0 ctx γ env = go ictx0
   where
@@ -157,14 +155,32 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
     getRewrites e = [ e' | rw <- knSims γ , (_, e') <- rewrite e rw ]
     checkFact ictx (lhs, rhs) = do
       result <- evalStateT (simplify γ ictx <$> evalStep γ ictx lhs) env
+      when (result /= rhs) $
+        printf "????%s -> %s\n\n" (show $ toFix lhs) (show $ toFix result)
       return $ result == rhs || (rhs `L.elem` getRewrites lhs)
-    go ictx | Just 16 <- icSubcId ictx = do
-                oks <- mapM (checkFact ictx) facts
-                putStrLn $ "OKS------ " ++ show oks
-                if and oks
-                  then return $ ictx{icEquals = S.union (S.fromList facts) (icEquals ictx)}
-                  else go' ictx
+
+    fts :: (Expr, Expr) -> String
+    fts (lhs,rhs) = printf "%s \n->\n %s" (show $ toFix lhs) (show $ toFix rhs)
+
+    getCachedEqs :: String -> IO [(Expr, Expr)]
+    getCachedEqs filename = B.decodeFile filename
+
+    go ictx | Just subId <- icSubcId ictx = do
+      let infile = extFileName (PleCacheExt $ fromIntegral subId) (srcFile cfg)
+      hasPLECache <- doesFileExist infile
+      if hasPLECache
+        then do
+          cachedEqs <- getCachedEqs infile
+          badFacts <- filterM (fmap not . checkFact ictx) cachedEqs
+          case badFacts of
+            (f:_) -> error (printf "Constraint %d, failed recheck of \n%s" subId (fts f))
+            []    ->
+              return $ ictx { icEquals = S.union (S.fromList cachedEqs) (icEquals ictx)
+                            }
+        else go' ictx
+
     go ictx = go' ictx
+
     go' ictx | S.null (icCands ictx) = return ictx
     go' ictx = do
                   let cands = icCands ictx

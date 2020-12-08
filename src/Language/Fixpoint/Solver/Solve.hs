@@ -56,7 +56,7 @@ solve cfg fi = do
 -- | Progress Bar
 --------------------------------------------------------------------------------
 withProgressFI :: SolverInfo a b -> IO b -> IO b
-withProgressFI = withProgress . (+ 1) . fromIntegral . cNumScc . siDeps  
+withProgressFI = withProgress . (+ 1) . fromIntegral . cNumScc . siDeps
 --------------------------------------------------------------------------------
 
 printStats :: F.SInfo a ->  W.Worklist a -> Stats -> IO ()
@@ -87,7 +87,7 @@ solve_ :: (NFData a, F.Fixpoint a, F.Loc a)
 --------------------------------------------------------------------------------
 solve_ cfg fi s0 ks wkl = do
   let s1   = {-# SCC "sol-init" #-} S.init cfg fi ks
-  let s2   = mappend s0 s1 
+  let s2   = mappend s0 s1
   -- let s3   = solveEbinds fi s2 
   s       <- {-# SCC "sol-refine" #-} refine s2 wkl
   res     <- {-# SCC "sol-result" #-} result cfg wkl s
@@ -177,7 +177,7 @@ solResult cfg = minimizeResult cfg . Sol.result
 
 result_ :: (F.Loc a, NFData a) => Config -> W.Worklist a -> Sol.Solution -> SolveM (F.FixResult (F.SimpC a))
 result_  cfg w s = do
-  filtered <- filterM (isUnsat s) cs
+  filtered <- filterM (isUnsat cfg s) cs
   sts      <- stats
   pure $ res sts filtered
   where
@@ -186,9 +186,9 @@ result_  cfg w s = do
     res sts cs' = F.Unsafe sts cs'
 
 isChecked :: Config -> [F.SimpC a] -> [F.SimpC a]
-isChecked cfg cs = case checkCstr cfg of 
-  []   -> cs 
-  ids  -> let s = S.fromList ids in 
+isChecked cfg cs = case checkCstr cfg of
+  []   -> cs
+  ids  -> let s = S.fromList ids in
           [c | c <- cs, S.member (F.subcId c) s ]
 
 --------------------------------------------------------------------------------
@@ -217,15 +217,15 @@ minimizeConjuncts p = F.pAnd <$> go (F.conjuncts p) []
                               else go ps (p:acc)
 
 --------------------------------------------------------------------------------
-isUnsat :: (F.Loc a, NFData a) => Sol.Solution -> F.SimpC a -> SolveM Bool
+isUnsat :: (F.Loc a, NFData a) => Config -> Sol.Solution -> F.SimpC a -> SolveM Bool
 --------------------------------------------------------------------------------
-isUnsat s c = do
+isUnsat cfg s c = do
   _     <- tickIter True -- newScc
   be    <- getBinds
   let lp = S.lhsPred be s c
   -- lift   $ printf "isUnsat %s" (show lp)
   let rp = rhsPred        c
-  res   <- not <$> isValid (cstrSpan c) (Just $ F.subcId c) lp rp
+  res   <- not <$> isValid (cstrSpan c) (Just $ PLECache (F.subcId c) (srcFile cfg)) lp rp
   lift   $ whenLoud $ showUnsat res (F.subcId c) lp rp
   return res
 
@@ -245,9 +245,9 @@ rhsPred c
   | otherwise  = errorstar $ "rhsPred on non-target: " ++ show (F.sid c)
 
 --------------------------------------------------------------------------------
-isValid :: F.SrcSpan -> Maybe SubcId -> F.Expr -> F.Expr -> SolveM Bool
+isValid :: F.SrcSpan -> Maybe PLECache -> F.Expr -> F.Expr -> SolveM Bool
 --------------------------------------------------------------------------------
-isValid sp subcId p q = (not . null) <$> filterValid sp subcId p [(q, ())]
+isValid sp pleCache p q = (not . null) <$> filterValid sp pleCache p [(q, ())]
 
 cstrSpan :: (F.Loc a) => F.SimpC a -> F.SrcSpan
 cstrSpan = F.srcSpan . F.sinfo

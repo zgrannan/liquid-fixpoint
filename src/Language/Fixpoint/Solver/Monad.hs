@@ -25,6 +25,7 @@ module Language.Fixpoint.Solver.Monad
        , tickIter
        , stats
        , numIter
+       , PLECache(..)
        )
        where
 
@@ -58,6 +59,14 @@ import qualified Data.Text as T
 import Language.Fixpoint.SortCheck (unElab)
 import Language.Fixpoint.Types (symbolText, Symbol, symbol, Expr(..), eApps, Subst(..), Subable(subst))
 import Debug.Trace (trace)
+import Language.Fixpoint.Utils.Files (Ext(..), extFileName)
+import System.IO
+import qualified Data.Binary as B
+
+data PLECache = PLECache
+  { pSubcId  :: F.SubcId
+  , pSrcFile :: String
+  }
 
 --------------------------------------------------------------------------------
 -- | Solver Monadic API --------------------------------------------------------
@@ -160,12 +169,12 @@ filterRequired = error "TBD:filterRequired"
 --------------------------------------------------------------------------------
 -- | `filterValid p [(x1, q1),...,(xn, qn)]` returns the list `[ xi | p => qi]`
 --------------------------------------------------------------------------------
-filterValid :: F.SrcSpan -> Maybe F.SubcId -> F.Expr -> F.Cand a -> SolveM [a]
+filterValid :: F.SrcSpan -> Maybe PLECache -> F.Expr -> F.Cand a -> SolveM [a]
 --------------------------------------------------------------------------------
-filterValid sp id p qs = do
+filterValid sp plec p qs = do
   qs' <- withContext $ \me ->
            smtBracket me "filterValidLHS" $
-             filterValid_ sp id p qs me
+             filterValid_ sp plec p qs me
   -- stats
   incBrkt
   incChck (length qs)
@@ -185,8 +194,8 @@ splitPLEConstraints p =
     isPLEConstraint = isJust . getPLEConstraint
 
 
-filterValid_ :: F.SrcSpan -> Maybe F.SubcId -> F.Expr -> F.Cand a -> Context -> IO [a]
-filterValid_ sp subcID p qs me = catMaybes <$> do
+filterValid_ :: F.SrcSpan -> Maybe PLECache -> F.Expr -> F.Cand a -> Context -> IO [a]
+filterValid_ sp pleCache p qs me = catMaybes <$> do
   -- printf "%d soft constraints, %d hard\n" (length soft) (length hard)
   -- mapM_ print (map unElab hard)
   mapM_ (smtAssert' me) (nub soft)
@@ -197,14 +206,21 @@ filterValid_ sp subcID p qs me = catMaybes <$> do
       -- printf "Check: %s\n" (fst $ reify (unElab q))
       smtAssert me (F.PNot q)
       valid <- smtCheckUnsat me
-      when valid $ do
-        (Asserts assertIDs) <- command me GetUnsatCore
-        printf "Unsat Core %s: %s\n" (show subcID) (show assertIDs)
-        printFacts $ map (unElab . getConstraint) assertIDs
+      case pleCache of
+        Just (PLECache subcID srcFile) | valid ->
+          do
+            (Asserts assertIDs) <- command me GetUnsatCore
+            let outfile = extFileName (PleCacheExt $ fromIntegral subcID) srcFile
+            printf "Unsat Core %s: %s\n" (show subcID) (show assertIDs)
+            let eqs = map (toPair . unElab . getConstraint) assertIDs
+            putStrLn (eqsString eqs)
+            B.encodeFile outfile eqs
+        _ -> return ()
       return $ if valid then Just x else Nothing
   where
-    printFacts facts = printf "S.fromList [ %s ]\n\n" $ intercalate "\n," (map toPair facts)
-    toPair (F.EEq lhs rhs) = show (lhs, rhs)
+    eqsString :: [(Expr, Expr)] -> String
+    eqsString eqs = printf "[ %s ]\n\n" $ intercalate "\n," (map show eqs)
+    toPair (F.EEq lhs rhs) = (lhs, rhs)
 
     (soft, hard) = splitPLEConstraints p
     getConstraint smtAssertID =

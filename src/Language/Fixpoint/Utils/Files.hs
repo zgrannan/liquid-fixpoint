@@ -94,11 +94,13 @@ data Ext = Cgi      -- ^ Constraint Generation Information
          | Min      -- ^ filter constraints with delta debug
          | MinQuals -- ^ filter qualifiers with delta debug
          | MinKVars -- ^ filter kvars with delta debug
+         | PleCacheExt Int
          deriving (Eq, Ord, Show)
 
 extMap :: Ext -> FilePath
 extMap          = go
   where
+    go (PleCacheExt n) = "." ++ show n ++ ".ple"
     go Cgi      = ".cgi"
     go Pred     = ".pred"
     go PAss     = ".pass"
