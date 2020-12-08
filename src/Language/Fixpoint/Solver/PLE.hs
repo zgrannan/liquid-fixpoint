@@ -155,8 +155,11 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
     getRewrites e = [ e' | rw <- knSims γ , (_, e') <- rewrite e rw ]
     checkFact ictx (lhs, rhs) = do
       result <- evalStateT (simplify γ ictx <$> evalStep γ ictx lhs) env
-      when (result /= rhs) $
-        printf "????%s -> %s\n\n" (show $ toFix lhs) (show $ toFix result)
+      -- let results = result : (getRewrites result)
+      -- oks <- mapM (isValid γ . EEq rhs) results
+      -- return $ or oks
+      -- when (result /= rhs) $
+      --   printf "????%s -> %s\n\n" (show $ toFix lhs) (show $ toFix result)
       return $ result == rhs || (rhs `L.elem` getRewrites result)
 
     fts :: (Expr, Expr) -> String
@@ -171,9 +174,12 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
       if hasPLECache
         then do
           cachedEqs <- getCachedEqs infile
-          badFacts <- filterM (fmap not . checkFact ictx) cachedEqs
+          badFacts <- SMT.smtBracket ctx "PLE.evaluate" $ do
+            SMT.smtAssert ctx (pAnd (S.toList $ icAssms ictx))
+            filterM (fmap not . checkFact ictx) cachedEqs
           case badFacts of
-            (f:_) -> error (printf "Constraint %d, failed recheck of \n%s" subId (fts f))
+            (f:_) ->
+              printf "Constraint %d, failed recheck of \n%s" subId (fts f) >> go' ictx
             []    ->
               return $ ictx { icEquals = S.union (S.fromList cachedEqs) (icEquals ictx)
                             }
@@ -833,6 +839,8 @@ instance Simplifiable Expr where
       tx (EIte b e1 e2)
         | isTautoPred b  = e1
         | isContraPred b = e2
+      tx (EIte b PTrue PFalse) = b
+      tx (EIte b e e') | e == e' = e
       tx (ECoerc s t e)
         | s == t = e
       tx (EApp (EVar f) a)

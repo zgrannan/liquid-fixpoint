@@ -219,7 +219,10 @@ filterValid_ sp pleCache p qs me = catMaybes <$> do
       return $ if valid then Just x else Nothing
   where
     eqsString :: [(Expr, Expr)] -> String
-    eqsString eqs = printf "[ %s ]\n\n" $ intercalate "\n," (map show eqs)
+    eqsString eqs = printf "%s\n\n" $ intercalate "\n," (map show' eqs)
+
+    show' (a,b) = show (F.toFix a) ++ " = " ++ show (F.toFix b)
+
     toPair (F.EEq lhs rhs) = (lhs, rhs)
 
     (soft, hard) = splitPLEConstraints p
