@@ -157,7 +157,7 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
       result <- evalStateT (simplify γ ictx <$> evalStep γ ictx lhs) env
       when (result /= rhs) $
         printf "????%s -> %s\n\n" (show $ toFix lhs) (show $ toFix result)
-      return $ result == rhs || (rhs `L.elem` getRewrites lhs)
+      return $ result == rhs || (rhs `L.elem` getRewrites result)
 
     fts :: (Expr, Expr) -> String
     fts (lhs,rhs) = printf "%s \n->\n %s" (show $ toFix lhs) (show $ toFix rhs)
@@ -604,15 +604,15 @@ evalApp γ ctx _ (EVar f, es)
        let (es1,es2) = splitAt (length (eqArgs eq)) es
        shortcut (substEq env eq es1) es2
   where
-    shortcut (EIte i e1 e2) es2 = do
-      b   <- fastEval γ ctx i
-      b'  <- liftIO $ (mytracepp ("evalEIt POS " ++ showpp b) <$> isValid γ b)
-      nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid γ (PNot b))
-      r <- if b'
-        then shortcut e1 es2
-        else if nb' then shortcut e2 es2
-        else return $ eApps (EIte b e1 e2) es2
-      return r
+    -- shortcut (EIte i e1 e2) es2 = do
+    --   b   <- fastEval γ ctx i
+    --   b'  <- liftIO $ (mytracepp ("evalEIt POS " ++ showpp b) <$> isValid γ b)
+    --   nb' <- liftIO $ (mytracepp ("evalEIt NEG " ++ showpp (PNot b)) <$> isValid γ (PNot b))
+    --   r <- if b'
+    --     then shortcut e1 es2
+    --     else if nb' then shortcut e2 es2
+    --     else return $ eApps (EIte b e1 e2) es2
+    --   return r
     shortcut e' es2 = return $ eApps e' es2
 
 evalApp γ _ _ (EVar f, e:es)
