@@ -153,6 +153,8 @@ evalCandsLoop cfg ictx0 ctx γ env = go ictx0
         exprs <> (S.fromList $ concat rws)
 
     getRewrites e = [ e' | rw <- knSims γ , (_, e') <- rewrite e rw ]
+    checkFact _ (lhs, _) |
+      Mb.isNothing $ checkSortExpr dummySpan (seSort $ evEnv env) lhs = return False
     checkFact ictx (lhs, rhs) = do
       result <- evalStateT (simplify γ ictx <$> evalStep γ ictx lhs) env
       -- let results = result : (getRewrites result)
