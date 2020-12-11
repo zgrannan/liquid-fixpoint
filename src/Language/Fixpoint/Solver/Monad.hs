@@ -26,6 +26,7 @@ module Language.Fixpoint.Solver.Monad
        , stats
        , numIter
        , PLECache(..)
+       , SolverState(..)
        )
        where
 
