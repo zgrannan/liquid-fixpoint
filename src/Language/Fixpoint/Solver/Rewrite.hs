@@ -24,7 +24,9 @@ import qualified Data.Maybe           as Mb
 import           Language.Fixpoint.Types hiding (simplify)
 import qualified Data.Text as TX
 import Text.PrettyPrint (text)
-import qualified Language.REST.Types as RT
+
+import           Language.REST.MetaTerm
+import           Language.REST.Types as RT
 import           Language.REST.Op
 import           Language.REST.OrderingConstraints as OC
 import           Language.REST.Core (orient)
@@ -51,6 +53,29 @@ data RewriteArgs = RWArgs
  , rwTerminationOpts  :: RWTerminationOpts
  }
 
+pathStr :: [(RT.RuntimeTerm, TermOrigin)] -> String
+pathStr ts = L.concatMap line ts
+  where
+
+    line (r, o) = arrow o ++ pretty (toMetaTerm r)
+
+    arrow RW = "\n-->R "
+    arrow PLE = "\n-->P "
+
+    pretty :: MetaTerm -> String
+    pretty = prettyPrint $ PPArgs substs ["++", ":"] (const Nothing)
+
+    substs =
+      [ ("Lists.",          "")
+      , ("GHC.Types.",      "")
+      , ("is$GHC.Types.[]", "isNull")
+      , ("lqdc##$select##GHC.Types.:##2", "tail")
+      , ("lqdc##$select##GHC.Types.:##1", "head")
+      ]
+
+dropInitialPLE :: [(Expr, TermOrigin)] -> [(Expr, TermOrigin)]
+dropInitialPLE ((_ , PLE ): ts@((_, PLE):_) ) = dropInitialPLE ts
+dropInitialPLE xs                             = xs
 
 getRewrite :: RewriteArgs -> [(Expr, TermOrigin)] -> SubExpr -> AutoRewrite -> MaybeT IO (Expr, TermOrigin)
 getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
@@ -61,29 +86,30 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
     guard $ all ( (/= expr') . fst) path
     mapM_ (check . subst su) exprs
     let termPath = map (\(t, o) -> (convert t, o)) path
+    liftIO $ putStrLn $ "Check:" ++ pathStr (termPath ++ [(convert expr', RW)])
     case rwTerminationOpts rwArgs of
       RWTerminationCheckEnabled _ ->
         if diverges (convert expr')
-        then mzero
-        else return (expr', RW)
+        then liftIO (putStrLn "Diverges") >> mzero
+        else liftIO (putStrLn "OK!") >> return (expr', RW)
       RWTerminationCheckDisabled -> return (expr', RW)
   where
 
     diverges :: RT.RuntimeTerm -> Bool
     diverges e =
       let
-        p = map (convert . fst) path
+        p = map (convert . fst) (dropInitialPLE path)
       in
         OC.isUnsatisfiable $ orient (p ++ [e])
 
     convert (EIte i t e) = RT.App "$ite" $ map convert [i,t,e]
-    convert (EApp (EVar s) (EVar var))
-      | dcPrefix `isPrefixOfSym` s
-      = RT.App (Op $ TX.unpack $ TX.concat [symbolText s, "$", symbolText var]) []
+    -- convert (EApp (EVar s) (EVar var))
+    --   | dcPrefix `isPrefixOfSym` s
+    --   = RT.App (Op $ TX.unpack $ TX.concat [symbolText s, "$", symbolText var]) []
      
     convert e@(EApp{})    | (EVar fName, terms) <- splitEApp e
-                          = RT.App (Op (show fName)) $ map convert terms
-    convert (EVar s)      = RT.App (Op (show s)) []
+                          = RT.App (Op (symbolString fName)) $ map convert terms
+    convert (EVar s)      = RT.App (Op (symbolString s)) []
     convert (PAnd es)     = RT.App "$and" $ map convert es
     convert (POr es)      = RT.App "$or" $ map convert es
     convert (PAtom s l r) = RT.App (Op $ "$atom" ++ show s) [convert l, convert r]
