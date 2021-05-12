@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric             #-}
 {-# LANGUAGE OverloadedStrings         #-}
 {-# LANGUAGE PatternGuards             #-}
+{-# LANGUAGE ImplicitParams            #-}
 
 module Language.Fixpoint.Solver.Rewrite
   ( getRewrite
@@ -28,7 +29,8 @@ import Text.PrettyPrint (text)
 import           Language.REST.MetaTerm
 import           Language.REST.Types as RT
 import           Language.REST.Op
-import           Language.REST.OrderingConstraints as OC
+import           Language.REST.OrderingConstraints
+import           Language.REST.OrderingConstraints.Lazy as OC
 import           Language.REST.Core (orient)
 
 type SubExpr = (Expr, Expr -> Expr)
@@ -63,7 +65,7 @@ pathStr ts = L.concatMap line ts
     arrow PLE = "\n-->P "
 
     pretty :: MetaTerm -> String
-    pretty = prettyPrint $ PPArgs substs ["++", ":"] (const Nothing)
+    pretty = prettyPrint $ PPArgs substs ["/\\", "\\/", "++", ":"] (const Nothing)
 
     substs =
       [ ("Lists.",          "")
@@ -77,13 +79,13 @@ dropInitialPLE :: [(Expr, TermOrigin)] -> [(Expr, TermOrigin)]
 dropInitialPLE ((_ , PLE ): ts@((_, PLE):_) ) = dropInitialPLE ts
 dropInitialPLE xs                             = xs
 
-getRewrite :: RewriteArgs -> [(Expr, TermOrigin)] -> SubExpr -> AutoRewrite -> MaybeT IO (Expr, TermOrigin)
-getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
+getRewrite :: RewriteArgs -> S.HashSet Expr -> [(Expr, TermOrigin)] -> SubExpr -> AutoRewrite -> MaybeT IO (Expr, TermOrigin)
+getRewrite rwArgs seen path (subE, toE) (AutoRewrite args lhs rhs) =
   do
     su <- MaybeT $ return $ unify freeVars lhs subE
     let subE' = subst su rhs
     let expr' = toE subE'
-    guard $ all ( (/= expr') . fst) path
+    guard $ not $ S.member expr' seen
     mapM_ (check . subst su) exprs
     let termPath = map (\(t, o) -> (convert t, o)) path
     liftIO $ putStrLn $ "Check:" ++ pathStr (termPath ++ [(convert expr', RW)])
@@ -100,7 +102,9 @@ getRewrite rwArgs path (subE, toE) (AutoRewrite args lhs rhs) =
       let
         p = map (convert . fst) (dropInitialPLE path)
       in
-        OC.isUnsatisfiable $ orient (p ++ [e])
+        not $ OC.isSatisfiable $ orient (p ++ [e])
+      where
+        ?impl = OC.lazyOC
 
     convert (EIte i t e) = RT.App "$ite" $ map convert [i,t,e]
     -- convert (EApp (EVar s) (EVar var))
@@ -167,6 +171,15 @@ subExprs' (PAtom op lhs rhs) = lhs'' ++ rhs''
     lhs'' = map (\(e, f) -> (e, \e' -> PAtom op (f e') rhs)) lhs'
     rhs'' :: [SubExpr]
     rhs'' = map (\(e, f) -> (e, \e' -> PAtom op lhs (f e'))) rhs'
+
+subExprs' (EApp lhs rhs) =  lhs'' ++ rhs''
+  where
+    lhs' = subExprs lhs
+    rhs' = subExprs rhs
+    lhs'' :: [SubExpr]
+    lhs'' = map (\(e, f) -> (e, \e' -> EApp (f e') rhs)) lhs'
+    rhs'' :: [SubExpr]
+    rhs'' = map (\(e, f) -> (e, \e' -> EApp lhs (f e'))) rhs'
 
 -- subExprs' e@(EApp{}) = concatMap replace indexedArgs
 --   where

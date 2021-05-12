@@ -13,6 +13,7 @@
 {-# LANGUAGE PartialTypeSignatures     #-}
 {-# LANGUAGE TupleSections             #-}
 {-# LANGUAGE BangPatterns              #-}
+{-# LANGUAGE FlexibleContexts          #-}
 {-# LANGUAGE FlexibleInstances         #-}
 {-# LANGUAGE ViewPatterns              #-}
 {-# LANGUAGE PatternGuards             #-}
@@ -486,8 +487,10 @@ eval γ ctx path =
           let ee' = subst su ee
           in if ee == ee' then ee else subst' ee'
         rwArgs = RWArgs (isValid γ) (knRWTerminationOpts γ)
-        getRWs' s = 
-          Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrite rwArgs path s) autorws
+        -- Hack for now: only explore terms for rewriting once
+        getRWs' s = do
+          seen <- S.map fst <$> gets evAccum
+          Mb.catMaybes <$> mapM (liftIO . runMaybeT . getRewrite rwArgs seen path s) autorws
       in concat <$> mapM getRWs' (subExprs e')
           
     addConst (e,e') = if isConstant (knDCs γ) e'
@@ -677,6 +680,7 @@ knowledge cfg ctx si = KN
   , knLams                     = [] 
   , knSummary                  =    ((\s -> (smName s, 1)) <$> sims) 
                                  ++ ((\s -> (eqName s, length (eqArgs s))) <$> aenvEqs aenv)
+                                 ++ lits
   , knDCs                      = S.fromList (smDC <$> sims) 
   , knSels                     = Mb.catMaybes $ map makeSel  sims 
   , knConsts                   = Mb.catMaybes $ map makeCons sims 
@@ -686,7 +690,15 @@ knowledge cfg ctx si = KN
       then RWTerminationCheckEnabled (maxRWOrderingConstraints cfg)
       else RWTerminationCheckDisabled
   } 
-  where 
+  where
+
+    lits = map toSum (toListSEnv (gLits si))
+      where
+        toSum (sym, sort)      = (sym, getArity sort)
+
+        getArity (FFunc _ rhs) = 1 + getArity rhs
+        getArity _             = 0
+
     sims = aenvSimpl aenv ++ concatMap reWriteDDecl (ddecls si) 
     aenv = ae si 
 
